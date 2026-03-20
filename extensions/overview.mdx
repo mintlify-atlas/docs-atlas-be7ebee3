@@ -1,0 +1,230 @@
+---
+title: "Building Extensions"
+description: "Complete guide to building MediaWiki extensions from scratch."
+---
+
+A MediaWiki extension is a package of PHP classes, JSON configuration, and optional front-end assets that integrates with the MediaWiki hook and service systems. Extensions live in the `extensions/` directory of a MediaWiki installation and are activated by calling `wfLoadExtension()` in `LocalSettings.php`.
+
+## Extension structure
+
+Every modern extension has at minimum:
+
+<CardGroup cols={2}>
+  <Card title="extension.json" icon="file-code">
+    The manifest file that declares metadata, autoloading, hooks, messages, and all other registration data.
+  </Card>
+  <Card title="PHP classes" icon="code">
+    Hook handlers, special pages, API modules, and other logic organized under a PSR-4 namespace.
+  </Card>
+  <Card title="i18n messages" icon="languages">
+    JSON files under `i18n/` that supply translatable strings for the extension's UI.
+  </Card>
+  <Card title="ResourceLoader modules" icon="layers">
+    Optional JS and CSS bundles declared in `extension.json` and served by MediaWiki's resource pipeline.
+  </Card>
+</CardGroup>
+
+## Creating a minimal extension
+
+The following steps build a working extension called **HelloWorld** that adds a notice to every page using the `BeforePageDisplay` hook.
+
+<Steps>
+  <Step title="Create the extension directory">
+    Extensions must be placed inside the `extensions/` subdirectory of your MediaWiki installation.
+
+    ```bash
+    mkdir extensions/HelloWorld
+    mkdir -p extensions/HelloWorld/src
+    mkdir -p extensions/HelloWorld/i18n
+    ```
+
+    <Note>
+      Under POSIX systems (Linux), if your extension directory is a symlink, the parent of a symbolic path refers to the link source, not the target. Check the `MW_INSTALL_PATH` environment variable if your extension is not in the default location.
+    </Note>
+  </Step>
+
+  <Step title="Write extension.json">
+    `extension.json` is the manifest read by `ExtensionRegistry` during bootstrapping. The `manifest_version` and `name` fields are required.
+
+    ```json extensions/HelloWorld/extension.json
+    {
+        "manifest_version": 2,
+        "name": "HelloWorld",
+        "version": "1.0.0",
+        "author": "Your Name",
+        "url": "https://www.mediawiki.org/wiki/Extension:HelloWorld",
+        "descriptionmsg": "helloworld-desc",
+        "license-name": "GPL-2.0-or-later",
+        "type": "other",
+        "requires": {
+            "MediaWiki": ">= 1.35.0"
+        },
+        "AutoloadNamespaces": {
+            "MediaWiki\\Extension\\HelloWorld\\": "src/"
+        },
+        "HookHandlers": {
+            "main": {
+                "class": "MediaWiki\\Extension\\HelloWorld\\HookHandler"
+            }
+        },
+        "Hooks": {
+            "BeforePageDisplay": "main"
+        },
+        "MessagesDirs": {
+            "HelloWorld": [
+                "i18n"
+            ]
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Write the hook handler class">
+    Create a PHP class under `src/` that implements the hook interface. Starting in MediaWiki 1.35, each hook has an associated interface with a single `on*` method.
+
+    ```php extensions/HelloWorld/src/HookHandler.php
+    <?php
+
+    namespace MediaWiki\Extension\HelloWorld;
+
+    use MediaWiki\Hook\BeforePageDisplayHook;
+    use MediaWiki\Output\OutputPage;
+    use Skin;
+
+    class HookHandler implements BeforePageDisplayHook {
+
+        /**
+         * @param OutputPage $out
+         * @param Skin $skin
+         */
+        public function onBeforePageDisplay( $out, $skin ): void {
+            $out->addWikiMsg( 'helloworld-notice' );
+        }
+    }
+    ```
+
+    <Tip>
+      The method name is the hook name prefixed with `on`. For the `BeforePageDisplay` hook the method is `onBeforePageDisplay`. Colons in hook names are replaced with underscores.
+    </Tip>
+  </Step>
+
+  <Step title="Add i18n messages">
+    Create at minimum an English message file. The key `helloworld-desc` is the extension description shown on `Special:Version`.
+
+    ```json extensions/HelloWorld/i18n/en.json
+    {
+        "@metadata": {
+            "authors": ["Your Name"]
+        },
+        "helloworld-desc": "Displays a notice on every page.",
+        "helloworld-notice": "Hello from the HelloWorld extension!"
+    }
+    ```
+
+    ```json extensions/HelloWorld/i18n/qqq.json
+    {
+        "@metadata": {
+            "authors": ["Your Name"]
+        },
+        "helloworld-desc": "{{desc|name=HelloWorld|url=https://www.mediawiki.org/wiki/Extension:HelloWorld}}",
+        "helloworld-notice": "The notice message displayed at the top of every wiki page."
+    }
+    ```
+  </Step>
+
+  <Step title="Register the extension in LocalSettings.php">
+    Add a single line to `LocalSettings.php` to activate the extension. This must come after the initial MediaWiki setup.
+
+    ```php LocalSettings.php
+    wfLoadExtension( 'HelloWorld' );
+    ```
+
+    `wfLoadExtension()` locates `extensions/HelloWorld/extension.json`, processes it through `ExtensionRegistry`, registers autoloaded namespaces, hooks, and messages, and queues any `ServiceWiringFiles`.
+  </Step>
+
+  <Step title="Verify the installation">
+    Navigate to `Special:Version` on your wiki. The HelloWorld extension should appear in the installed extensions table with the version and description you declared.
+
+    You can also check via the command line:
+
+    ```bash
+    php maintenance/run.php eval 'echo ExtensionRegistry::getInstance()->isLoaded("HelloWorld") ? "loaded\n" : "not loaded\n";'
+    ```
+  </Step>
+</Steps>
+
+## Final file layout
+
+After following the steps above, your extension directory looks like:
+
+```
+extensions/HelloWorld/
+├── extension.json          # Manifest — required
+├── src/
+│   └── HookHandler.php     # Hook handler class
+└── i18n/
+    ├── en.json             # English messages
+    └── qqq.json            # Message documentation
+```
+
+## Complete extension.json example
+
+This is the full `extension.json` from the HelloWorld example, annotated with the purpose of each field:
+
+```json
+{
+    "manifest_version": 2,
+    "name": "HelloWorld",
+    "version": "1.0.0",
+    "author": "Your Name",
+    "url": "https://www.mediawiki.org/wiki/Extension:HelloWorld",
+    "descriptionmsg": "helloworld-desc",
+    "license-name": "GPL-2.0-or-later",
+    "type": "other",
+    "requires": {
+        "MediaWiki": ">= 1.35.0"
+    },
+    "AutoloadNamespaces": {
+        "MediaWiki\\Extension\\HelloWorld\\": "src/"
+    },
+    "HookHandlers": {
+        "main": {
+            "class": "MediaWiki\\Extension\\HelloWorld\\HookHandler"
+        }
+    },
+    "Hooks": {
+        "BeforePageDisplay": "main"
+    },
+    "MessagesDirs": {
+        "HelloWorld": [
+            "i18n"
+        ]
+    }
+}
+```
+
+## How wfLoadExtension works
+
+`wfLoadExtension( 'HelloWorld' )` is a thin wrapper around `ExtensionRegistry::getInstance()->queue()`. `ExtensionRegistry` (in `includes/Registration/ExtensionRegistry.php`) reads the manifest, validates it against the JSON schema, and:
+
+1. Registers all `AutoloadNamespaces` and `AutoloadClasses` entries with the PHP autoloader.
+2. Queues `HookHandlers` and `Hooks` for installation into `HookContainer`.
+3. Schedules `ServiceWiringFiles` to be loaded when the service container is first built.
+4. Registers `MessagesDirs` with the localisation system.
+5. Runs the optional `callback` function immediately after processing.
+
+The registry caches processed manifests in object cache to avoid re-parsing on every request.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="extension.json reference" icon="book" href="/extensions/extension-json">
+    Full reference for every field in the manifest file.
+  </Card>
+  <Card title="Extension hooks" icon="webhook" href="/extensions/hooks">
+    How to register and implement hook handlers, including service injection.
+  </Card>
+  <Card title="Extension services" icon="server" href="/extensions/services">
+    Adding dependency-injected services to your extension.
+  </Card>
+</CardGroup>

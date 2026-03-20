@@ -1,0 +1,186 @@
+---
+title: "Database Overview"
+description: "MediaWiki's database abstraction layer: connection management, read/write splits, and transaction handling."
+---
+
+MediaWiki provides a database abstraction layer that handles connection management, query building, replication lag, and cross-database compatibility. All database access goes through this layer rather than calling PHP's database extensions directly.
+
+## Getting a connection
+
+The primary entry point is `IConnectionProvider`, retrieved from the service container:
+
+```php
+use MediaWiki\MediaWikiServices;
+
+$dbProvider = MediaWikiServices::getInstance()->getConnectionProvider();
+```
+
+The `IConnectionProvider` interface exposes two methods that reflect the read/write split:
+
+```php
+// For read queries — uses a replica database when available
+$dbr = $dbProvider->getReplicaDatabase();
+
+// For write queries — always uses the primary database
+$dbw = $dbProvider->getPrimaryDatabase();
+```
+
+<Note>
+  The convention `$dbr` (replica/read) and `$dbw` (write/primary) is used throughout MediaWiki's codebase. Always use the correct handle for the operation you are performing.
+</Note>
+
+## The read/write split
+
+Large MediaWiki installations like Wikimedia run a primary MySQL server with many replica servers. Replicas handle all read traffic; the primary handles writes. The `IConnectionProvider` interface encodes this pattern directly.
+
+<Warning>
+  Never write to a replica database handle (`$dbr`). If you do, your write will succeed locally but fail when replicated to the replica due to unique key conflicts or other constraint violations. Replication will stop and may require hours of manual repair.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="getReplicaDatabase()" icon="eye">
+    Returns a connection to a replica (read-only). Use for all SELECT queries. Automatically load-balances across available replicas.
+  </Card>
+  <Card title="getPrimaryDatabase()" icon="pen">
+    Returns a connection to the primary (read/write). Use for INSERT, UPDATE, DELETE, and any read that must see the latest committed data.
+  </Card>
+</CardGroup>
+
+### A complete read/write example
+
+```php
+use MediaWiki\MediaWikiServices;
+
+$dbProvider = MediaWikiServices::getInstance()->getConnectionProvider();
+
+// Read from a replica
+$dbr = $dbProvider->getReplicaDatabase();
+$res = $dbr->newSelectQueryBuilder()
+    ->select( [ 'page_id', 'page_title' ] )
+    ->from( 'page' )
+    ->where( [ 'page_namespace' => NS_MAIN ] )
+    ->limit( 10 )
+    ->fetchResultSet();
+
+foreach ( $res as $row ) {
+    // process $row->page_id, $row->page_title
+}
+
+// Write to the primary
+$dbw = $dbProvider->getPrimaryDatabase();
+$dbw->newInsertQueryBuilder()
+    ->insertInto( 'my_extension_table' )
+    ->row( [ 'col_page_id' => 42, 'col_data' => 'value' ] )
+    ->caller( __METHOD__ )
+    ->execute();
+```
+
+## Supported database backends
+
+MediaWiki is written primarily for MySQL/MariaDB, which is the canonical database and has the most optimized schema. The following backends are also supported:
+
+<CardGroup cols={3}>
+  <Card title="MySQL / MariaDB" icon="database">
+    The primary supported backend. Queries and schema are optimized for it. Required for production Wikimedia deployments.
+  </Card>
+  <Card title="PostgreSQL" icon="database">
+    Supported to varying degrees. Additional configuration and known issues are documented in `docs/databases/`.
+  </Card>
+  <Card title="SQLite" icon="database">
+    Supported for small or development installations. Not suitable for high-traffic production use.
+  </Card>
+</CardGroup>
+
+<Info>
+  The abstract schema system (see [Database Schema](/database/schema)) allows a single table definition to generate correct DDL for all three backends.
+</Info>
+
+## Transaction handling
+
+By default, MediaWiki opens a transaction at the first query in a request and commits it before sending the response. This means locks are held from query execution until the end of the request. To minimize lock contention, do as much computation as possible before issuing write queries.
+
+When you need tighter control, you can open an explicit transaction around a small group of writes:
+
+```php
+$dbw = $dbProvider->getPrimaryDatabase();
+$dbw->begin( __METHOD__ );
+
+// A series of related write queries
+$dbw->newInsertQueryBuilder()
+    ->insertInto( 'table_a' )
+    ->row( [ /* ... */ ] )
+    ->caller( __METHOD__ )
+    ->execute();
+
+$dbw->newUpdateQueryBuilder()
+    ->update( 'table_b' )
+    ->set( [ 'col' => 'value' ] )
+    ->where( [ 'id' => 1 ] )
+    ->caller( __METHOD__ )
+    ->execute();
+
+$dbw->commit( __METHOD__ );
+```
+
+<Warning>
+  Avoid locking reads (`SELECT ... FOR UPDATE`). They are poorly implemented in InnoDB and cause frequent deadlocks. Instead, combine existence checks into your write queries using conditional `WHERE` clauses, or rely on unique indexes with `INSERT IGNORE` and check the affected row count.
+</Warning>
+
+## Replication lag
+
+Replicas apply writes from the primary serially, so a long write query causes replicas to lag behind. MediaWiki's load balancer avoids sending reads to a replica lagged by more than a few seconds (`LoadBalancer::MAX_LAG_DEFAULT` = 6 seconds, configurable via `max lag` in `$wgLBFactoryConf`).
+
+When a replica is too far behind, MediaWiki enters **lagged replica mode** (`ILBFactory::laggedReplicaUsed`), which automatically shortens object cache and CDN cache expiry so stale data converges quickly.
+
+To write lag-friendly code:
+
+<Steps>
+  <Step title="Split large writes">
+    Break bulk writes into one-row-at-a-time loops. Multi-row `INSERT ... SELECT` queries are the worst offenders and should be avoided. Do the SELECT first, then INSERT row by row.
+  </Step>
+  <Step title="Read from replicas">
+    For the vast majority of reads, replica data is acceptable. Sending all queries to the primary to avoid lag is not a scalable solution.
+  </Step>
+  <Step title="Handle genuinely stale reads">
+    If you must ensure up-to-date data: (1) query the primary for a sequence number or timestamp, (2) run the full query on a replica and compare, (3) fall back to the primary only if the replica is behind. Use this pattern sparingly.
+  </Step>
+</Steps>
+
+## Query groups
+
+Query groups direct replica reads to a preferred set of database hosts. This reduces cache misses by concentrating similar queries on the same host, and isolates expensive queries from impacting general traffic.
+
+```php
+$dbProvider = MediaWikiServices::getInstance()->getConnectionProvider();
+
+// Direct this query to the 'vslow' replica group
+$dbr = $dbProvider->getReplicaDatabase( false, 'vslow' );
+```
+
+Supported query groups:
+
+| Group | Purpose |
+|---|---|
+| `api` | Queries specific to `api.php` requests, set via `ApiBase::getDB()` |
+| `dump` | Dump and export maintenance scripts; affects all queries in the process |
+| `vslow` | Expected long-running queries (> 1 second on large wikis); use in jobs, maintenance scripts, or behind `$wgMiserMode` |
+
+<Tip>
+  Using query groups does not guarantee a specific host will be used — it expresses a preference. The load balancer falls back to any available replica if the preferred group has no suitable host.
+</Tip>
+
+## Cross-wiki database access
+
+Some multi-wiki installations share tables (for example, a central `user` table) across wikis using `$wgSharedDB`. MediaWiki's `LBFactory` provides cross-wiki connection management through `getDBLoadBalancerFactory()`, but for most extension development you should use `IConnectionProvider` directly and let the framework handle routing.
+
+```php
+// Only use LBFactory when you need explicit cross-wiki access.
+// For normal extension code, prefer getConnectionProvider().
+$lbFactory = MediaWikiServices::getInstance()->getDBLoadBalancerFactory();
+$lb = $lbFactory->getMainLB( $wikiId );
+$dbr = $lb->getConnection( DB_REPLICA, [], $wikiId );
+```
+
+## GROUP BY compatibility
+
+MySQL allows `GROUP BY` without listing all non-aggregate `SELECT` columns. PostgreSQL and SQLite are stricter and require every non-aggregate column in `SELECT` to also appear in `GROUP BY`. For this reason, avoid `SELECT *` in any query that uses `GROUP BY`.

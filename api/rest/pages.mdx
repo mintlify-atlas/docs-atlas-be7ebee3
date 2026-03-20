@@ -1,0 +1,646 @@
+---
+title: "Pages API"
+description: "REST API endpoints for reading, creating, and updating wiki pages."
+---
+
+The Pages API provides endpoints for reading page content in multiple formats, browsing revision history, listing links, and creating or updating pages. All endpoints are served under `/w/rest.php/v1/page/`.
+
+## GET /v1/page/\{title\}
+
+Returns the latest revision's wikitext source, metadata, and license information for a page.
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth
+```
+
+### Path parameters
+
+<ParamField path="title" type="string" required>
+  The page title, URL-encoded. Use underscores instead of spaces (e.g., `Talk:Main_Page`).
+</ParamField>
+
+### Response
+
+<ResponseField name="id" type="integer" required>
+  The page ID.
+</ResponseField>
+
+<ResponseField name="key" type="string" required>
+  The page title in URL-key form (with underscores).
+</ResponseField>
+
+<ResponseField name="title" type="string" required>
+  The page title with spaces as it appears on the wiki.
+</ResponseField>
+
+<ResponseField name="latest" type="object" required>
+  Information about the most recent revision.
+  <Expandable title="properties">
+    <ResponseField name="id" type="integer">
+      The revision ID.
+    </ResponseField>
+    <ResponseField name="timestamp" type="string">
+      ISO 8601 timestamp of the revision.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="content_model" type="string" required>
+  The content model identifier (e.g., `wikitext`, `json`, `css`).
+</ResponseField>
+
+<ResponseField name="license" type="object" required>
+  The license under which this page's content is available.
+  <Expandable title="properties">
+    <ResponseField name="url" type="string">
+      URL of the license.
+    </ResponseField>
+    <ResponseField name="title" type="string">
+      Human-readable license name.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="source" type="string" required>
+  The raw wikitext source of the latest revision.
+</ResponseField>
+
+<ResponseField name="redirect_target" type="string">
+  Present only when the page is a redirect and the `redirect=no` query parameter was passed. Contains the URL of the redirect target.
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth
+```
+
+```json response
+{
+  "id": 9228,
+  "key": "Earth",
+  "title": "Earth",
+  "latest": {
+    "id": 1234567,
+    "timestamp": "2024-01-15T10:30:00Z"
+  },
+  "content_model": "wikitext",
+  "license": {
+    "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "title": "Creative Commons Attribution-Share Alike 4.0"
+  },
+  "source": "{{DISPLAYTITLE:Earth}}\n'''''Earth''''' is the third planet..."
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/page/\{title\}/bare
+
+Returns page metadata without the wikitext source, plus a URL pointing to the HTML representation. Useful for clients that need only page identity and a pointer to rendered content.
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/bare
+```
+
+### Path parameters
+
+<ParamField path="title" type="string" required>
+  The page title, URL-encoded.
+</ParamField>
+
+### Response
+
+<ResponseField name="id" type="integer" required>
+  The page ID.
+</ResponseField>
+
+<ResponseField name="key" type="string" required>
+  The page title in URL-key form.
+</ResponseField>
+
+<ResponseField name="title" type="string" required>
+  The page title with spaces.
+</ResponseField>
+
+<ResponseField name="latest" type="object" required>
+  Latest revision ID and timestamp.
+</ResponseField>
+
+<ResponseField name="content_model" type="string" required>
+  The content model identifier.
+</ResponseField>
+
+<ResponseField name="license" type="object" required>
+  License URL and title.
+</ResponseField>
+
+<ResponseField name="html_url" type="string" required>
+  The URL from which the Parsoid HTML for this page can be fetched (points to the `/html` endpoint).
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/bare
+```
+
+```json response
+{
+  "id": 9228,
+  "key": "Earth",
+  "title": "Earth",
+  "latest": {
+    "id": 1234567,
+    "timestamp": "2024-01-15T10:30:00Z"
+  },
+  "content_model": "wikitext",
+  "license": {
+    "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "title": "Creative Commons Attribution-Share Alike 4.0"
+  },
+  "html_url": "https://en.wikipedia.org/w/rest.php/v1/page/Earth/html"
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/page/\{title\}/html
+
+Returns the Parsoid HTML for the latest revision of a page. The response body is `text/html`, not JSON.
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/html
+```
+
+### Path parameters
+
+<ParamField path="title" type="string" required>
+  The page title, URL-encoded.
+</ParamField>
+
+### Headers
+
+<ParamField path="Accept-Language" type="string">
+  A BCP 47 language tag for variant conversion (e.g., `zh-hans` for Simplified Chinese). When provided, the HTML is variant-converted before being returned.
+</ParamField>
+
+<Note>
+The response is `text/html`, not JSON. The HTML is produced by Parsoid and conforms to the MediaWiki Parsoid HTML specification.
+</Note>
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/html
+```
+
+```bash curl with variant
+curl -H "Accept-Language: zh-hans" \
+  https://zh.wikipedia.org/w/rest.php/v1/page/%E5%9C%B0%E7%90%83/html
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/page/\{title\}/with\_html
+
+Returns the same metadata as `/v1/page/{title}` (without the `source` field) combined with the Parsoid HTML in a single JSON response.
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/with_html
+```
+
+### Path parameters
+
+<ParamField path="title" type="string" required>
+  The page title, URL-encoded.
+</ParamField>
+
+### Response
+
+Same fields as the `/bare` endpoint, plus:
+
+<ResponseField name="html" type="string" required>
+  The full Parsoid HTML of the page as a string.
+</ResponseField>
+
+<ResponseField name="redirect_target" type="string">
+  Present only when the page is a redirect and `redirect=no` was passed.
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/with_html
+```
+
+```json response
+{
+  "id": 9228,
+  "key": "Earth",
+  "title": "Earth",
+  "latest": {
+    "id": 1234567,
+    "timestamp": "2024-01-15T10:30:00Z"
+  },
+  "content_model": "wikitext",
+  "license": {
+    "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "title": "Creative Commons Attribution-Share Alike 4.0"
+  },
+  "html": "<!DOCTYPE html><html><head>...</head><body>...</body></html>"
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/page/\{title\}/history
+
+Returns up to 20 revisions of a page per request, ordered from newest to oldest by default. Supports cursor-based pagination and optional filtering by revision type.
+
+```bash
+curl "https://en.wikipedia.org/w/rest.php/v1/page/Earth/history"
+```
+
+### Path parameters
+
+<ParamField path="title" type="string" required>
+  The page title, URL-encoded.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="older_than" type="integer">
+  Return revisions older than this revision ID. Cannot be combined with `newer_than`.
+</ParamField>
+
+<ParamField query="newer_than" type="integer">
+  Return revisions newer than this revision ID. Cannot be combined with `older_than`.
+</ParamField>
+
+<ParamField query="filter" type="string">
+  Limit results to revisions of a specific type. One of: `anonymous`, `bot`, `reverted`, `minor`.
+</ParamField>
+
+### Response
+
+<ResponseField name="revisions" type="array" required>
+  Up to 20 revision objects, each containing:
+  <Expandable title="revision properties">
+    <ResponseField name="id" type="integer">
+      The revision ID.
+    </ResponseField>
+    <ResponseField name="timestamp" type="string">
+      ISO 8601 timestamp.
+    </ResponseField>
+    <ResponseField name="minor" type="boolean">
+      Whether this was a minor edit.
+    </ResponseField>
+    <ResponseField name="size" type="integer">
+      Size of the revision in bytes.
+    </ResponseField>
+    <ResponseField name="comment" type="string">
+      Edit summary. Null if hidden.
+    </ResponseField>
+    <ResponseField name="user" type="object">
+      The editor. Null if hidden. Contains `id` (integer, null for anonymous users) and `name` (string).
+    </ResponseField>
+    <ResponseField name="delta" type="integer">
+      Byte change from the parent revision. Null if the parent size is unknown.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="latest" type="string" required>
+  URL to this endpoint without pagination parameters (the canonical URL for this page's history).
+</ResponseField>
+
+<ResponseField name="older" type="string">
+  URL to fetch the next (older) page of results. Absent when there are no older revisions.
+</ResponseField>
+
+<ResponseField name="newer" type="string">
+  URL to fetch the previous (newer) page of results. Absent when there are no newer revisions.
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl "https://en.wikipedia.org/w/rest.php/v1/page/Earth/history"
+```
+
+```bash curl with filter
+curl "https://en.wikipedia.org/w/rest.php/v1/page/Earth/history?filter=minor"
+```
+
+```json response
+{
+  "revisions": [
+    {
+      "id": 1234567,
+      "timestamp": "2024-01-15T10:30:00Z",
+      "minor": false,
+      "size": 123456,
+      "comment": "Updated introduction",
+      "user": { "id": 42, "name": "Example" },
+      "delta": 150
+    }
+  ],
+  "latest": "https://en.wikipedia.org/w/rest.php/v1/page/Earth/history",
+  "older": "https://en.wikipedia.org/w/rest.php/v1/page/Earth/history?older_than=1234567"
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/page/\{title\}/history/counts/\{type\}
+
+Returns a count of revisions of the specified type. Counts are capped at a type-specific maximum and cached.
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/history/counts/edits
+```
+
+### Path parameters
+
+<ParamField path="title" type="string" required>
+  The page title, URL-encoded.
+</ParamField>
+
+<ParamField path="type" type="string" required>
+  The type of revision to count. One of: `anonymous`, `temporary`, `bot`, `editors`, `edits`, `minor`, `reverted`.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="from" type="integer">
+  Count revisions starting from this revision ID (inclusive). Only valid for `edits` and `editors` types; both `from` and `to` must be provided together.
+</ParamField>
+
+<ParamField query="to" type="integer">
+  Count revisions up to this revision ID (inclusive). Only valid for `edits` and `editors` types.
+</ParamField>
+
+### Response
+
+<ResponseField name="count" type="integer" required>
+  The count of revisions. Capped at a maximum that varies by type (e.g., 30,000 for `edits`, 25,000 for `editors`, 1,000 for `minor`).
+</ResponseField>
+
+<ResponseField name="limit" type="boolean" required>
+  `true` when the actual count exceeds the maximum and the returned `count` is the cap value.
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/history/counts/edits
+```
+
+```json response
+{
+  "count": 12543,
+  "limit": false
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/page/\{title\}/links/language
+
+Returns all interlanguage links for a page — links to the same topic in other language wikis.
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/links/language
+```
+
+### Path parameters
+
+<ParamField path="title" type="string" required>
+  The page title, URL-encoded.
+</ParamField>
+
+### Response
+
+An array of language link objects, ordered by language code:
+
+<ResponseField name="code" type="string">
+  BCP 47 language code (e.g., `fr`, `de`, `zh`).
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  The language name in the content language of the current wiki.
+</ResponseField>
+
+<ResponseField name="key" type="string">
+  The page title in the target wiki in DB-key form (with underscores).
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  The page title in the target wiki with spaces.
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/links/language
+```
+
+```json response
+[
+  {
+    "code": "de",
+    "name": "German",
+    "key": "Erde",
+    "title": "Erde"
+  },
+  {
+    "code": "fr",
+    "name": "French",
+    "key": "Terre",
+    "title": "Terre"
+  }
+]
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/page/\{title\}/links/media
+
+Returns a list of media files (images, videos, audio files) used on the page.
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/links/media
+```
+
+### Path parameters
+
+<ParamField path="title" type="string" required>
+  The page title, URL-encoded.
+</ParamField>
+
+### Response
+
+See the [Files API](/api/rest/overview#files) for the structure of individual file objects. The response is an array of file metadata objects.
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/page/Earth/links/media
+```
+
+</CodeGroup>
+
+---
+
+## PUT /v1/page/\{title\}
+
+Creates a new page or updates an existing one by replacing its wikitext. Requires authentication.
+
+<Warning>
+To update an existing page without overwriting concurrent edits, provide the `latest.id` field in the request body. Omitting it causes the request to behave as a creation-only operation; if the page already exists, a `409 Conflict` is returned.
+</Warning>
+
+```bash
+curl -X PUT \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source": "Hello, world!", "comment": "Initial content", "content_model": "wikitext"}' \
+  https://example.wiki/w/rest.php/v1/page/My_New_Page
+```
+
+### Path parameters
+
+<ParamField path="title" type="string" required>
+  The page title to create or update, URL-encoded.
+</ParamField>
+
+### Body parameters
+
+<ParamField body="source" type="string" required>
+  The full wikitext source for the new revision.
+</ParamField>
+
+<ParamField body="comment" type="string" required>
+  The edit summary.
+</ParamField>
+
+<ParamField body="content_model" type="string">
+  The content model for the page (e.g., `wikitext`, `json`). Defaults to the page's existing content model or `wikitext` for new pages.
+</ParamField>
+
+<ParamField body="latest" type="object">
+  Must be provided when updating an existing page. Contains `id` (integer) — the revision ID the edit is based on. If the page has been edited since this revision, a `409 Conflict` edit-conflict response is returned.
+</ParamField>
+
+<ParamField body="token" type="string">
+  Required when authenticating with cookies. Retrieve via `action=query&meta=tokens`. Not required when using OAuth.
+</ParamField>
+
+### Response
+
+On success, returns the same structure as `GET /v1/page/{title}` (page source and metadata) with HTTP `200` for an update or `201` for a creation.
+
+<CodeGroup>
+
+```bash create new page
+curl -X PUT \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source": "This is the page content.", "comment": "Creating page"}' \
+  https://example.wiki/w/rest.php/v1/page/New_Page
+```
+
+```bash update existing page
+curl -X PUT \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source": "Updated content.", "comment": "Fixing typo", "latest": {"id": 1234567}}' \
+  https://example.wiki/w/rest.php/v1/page/Earth
+```
+
+</CodeGroup>
+
+---
+
+## POST /v1/page
+
+Creates a new page. Returns `409 Conflict` if a page with the given title already exists. Requires authentication.
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "My New Page", "source": "Page content here.", "comment": "Creating new page"}' \
+  https://example.wiki/w/rest.php/v1/page
+```
+
+### Body parameters
+
+<ParamField body="title" type="string" required>
+  The title of the page to create.
+</ParamField>
+
+<ParamField body="source" type="string" required>
+  The full wikitext source for the new page.
+</ParamField>
+
+<ParamField body="comment" type="string" required>
+  The edit summary for the creation.
+</ParamField>
+
+<ParamField body="content_model" type="string">
+  The content model for the new page. Defaults to `wikitext`.
+</ParamField>
+
+<ParamField body="token" type="string">
+  Required when authenticating with cookies. Not required when using OAuth.
+</ParamField>
+
+### Response
+
+On success, returns `HTTP 201 Created` with the page source and metadata (same structure as `GET /v1/page/{title}`), plus a `Location` response header pointing to the newly created page's canonical REST URL.
+
+<CodeGroup>
+
+```bash curl
+curl -X POST \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "My New Page", "source": "Hello, wiki!", "comment": "First edit"}' \
+  https://example.wiki/w/rest.php/v1/page
+```
+
+```json response
+{
+  "id": 99001,
+  "key": "My_New_Page",
+  "title": "My New Page",
+  "latest": {
+    "id": 1234600,
+    "timestamp": "2024-01-20T08:00:00Z"
+  },
+  "content_model": "wikitext",
+  "license": {
+    "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "title": "Creative Commons Attribution-Share Alike 4.0"
+  },
+  "source": "Hello, wiki!"
+}
+```
+
+</CodeGroup>

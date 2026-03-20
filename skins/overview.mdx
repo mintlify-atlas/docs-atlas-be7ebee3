@@ -1,0 +1,195 @@
+---
+title: "Skins Overview"
+description: "MediaWiki's skin system for customizing wiki appearance."
+---
+
+A **skin** controls the visual layout and presentation of a MediaWiki wiki. Skins wrap parsed page content with navigation, toolbars, search, footers, and other interface elements. Unlike extensions, which add functionality to the wiki engine itself, skins are purely responsible for how content is displayed to the user.
+
+<Note>
+Skins and extensions share the same registration mechanism (`wfLoadSkin` / `wfLoadExtension`) and both use a JSON manifest file, but a skin's manifest is named `skin.json` rather than `extension.json`.
+</Note>
+
+## Skins vs. extensions
+
+<CardGroup cols={2}>
+  <Card title="Skins" icon="palette">
+    Control HTML structure, CSS, and JavaScript for the entire page layout. A skin wraps page content and renders navigation, footers, and UI chrome.
+  </Card>
+  <Card title="Extensions" icon="puzzle">
+    Add or modify wiki functionality—new special pages, parser functions, API endpoints, or hooks. Extensions do not control the overall page layout.
+  </Card>
+</CardGroup>
+
+Both types live in separate directories (`skins/` and `extensions/`) under the MediaWiki root, and both are loaded by queuing their JSON manifest via `ExtensionRegistry`.
+
+## Bundled skins
+
+MediaWiki ships five skins out of the box. They are distributed separately from core and must be installed into the `skins/` directory.
+
+<Tabs>
+  <Tab title="Vector 2022">
+    The default skin since MediaWiki 1.37 (2022). A modernised version of Vector with improved accessibility and mobile support. First introduced in the 1.36 release (2021).
+  </Tab>
+  <Tab title="Vector (legacy)">
+    Introduced in MediaWiki 1.16 (2010) and the default from 1.17 to 1.37. Designed to be more user-friendly and visually appealing than MonoBook.
+  </Tab>
+  <Tab title="MinervaNeue">
+    A mobile-optimised skin introduced in MediaWiki 1.19 (2012). Designed primarily for mobile devices but usable on desktop.
+  </Tab>
+  <Tab title="Timeless">
+    A responsive skin for different screen sizes introduced in MediaWiki 1.31 (2018). Equally focused on reading and editing interfaces.
+  </Tab>
+  <Tab title="MonoBook">
+    Named after the black-and-white photo of a book used in its background. Introduced in MediaWiki 1.3 (2004) and the default until Vector replaced it.
+  </Tab>
+</Tabs>
+
+## Loading skins with wfLoadSkin()
+
+Installing a skin requires placing its files in a subdirectory under `skins/` and calling `wfLoadSkin()` in `LocalSettings.php`.
+
+```php LocalSettings.php
+# Load the Vector skin
+wfLoadSkin( 'Vector' );
+
+# Set it as the site default
+$wgDefaultSkin = 'vector';
+```
+
+Internally, `wfLoadSkin()` resolves the skin's `skin.json` path and queues it through `ExtensionRegistry`:
+
+```php includes/GlobalFunctions.php
+function wfLoadSkin( $skin, $path = null ) {
+    if ( !$path ) {
+        global $wgStyleDirectory;
+        $path = "$wgStyleDirectory/$skin/skin.json";
+    }
+    ExtensionRegistry::getInstance()->queue( $path );
+}
+```
+
+To load multiple skins at once, use `wfLoadSkins()`:
+
+```php LocalSettings.php
+wfLoadSkins( [ 'Vector', 'MonoBook', 'Timeless' ] );
+```
+
+To disable a skin, remove its `wfLoadSkin()` line. User skin preferences are preserved and will be restored if the skin is re-enabled.
+
+## The SkinTemplate base class
+
+Most skins extend `SkinTemplate`, which itself extends the abstract `Skin` base class (in `MediaWiki\Skin\Skin`). The class hierarchy is:
+
+```
+Skin (abstract)
+└── SkinTemplate
+    └── SkinMustache
+        └── YourSkin
+```
+
+`Skin` defines the core interface—`outputPage()`, `initPage()`, `getTemplateData()`, `buildSidebar()`, `buildNavUrls()`, and more. `SkinTemplate` adds QuickTemplate rendering and portlet data assembly.
+
+```php includes/Skin/SkinTemplate.php
+class SkinTemplate extends Skin {
+    /**
+     * @return string HTML (body tag contents)
+     */
+    public function generateHTML() {
+        $tpl = $this->prepareQuickTemplate();
+        ob_start();
+        $tpl->execute();
+        $html = ob_get_contents();
+        ob_end_clean();
+        return $html;
+    }
+
+    public function outputPage() {
+        $out = $this->getOutput();
+        $this->initPage( $out );
+        $out->addJsConfigVars( $this->getJsConfigVars() );
+        echo $this->generateHTML();
+    }
+}
+```
+
+## Custom CSS and JavaScript per skin
+
+MediaWiki lets administrators and users customise styles and scripts without editing server files. These pages are edited like any wiki page and are delivered via ResourceLoader.
+
+### Site-wide customisation
+
+| Wiki page | Scope |
+|---|---|
+| `MediaWiki:Common.css` | CSS applied across all skins |
+| `MediaWiki:Common.js` | JavaScript applied across all skins |
+| `MediaWiki:Vector.css` | CSS applied only when Vector is active |
+| `MediaWiki:Vector.js` | JavaScript applied only when Vector is active |
+| `MediaWiki:Minerva.css` | CSS applied only when MinervaNeue is active |
+
+The pattern `MediaWiki:<skinname>.css` applies to any skin; the skinname used is the lowercase internal name registered in `skin.json`.
+
+### Per-user customisation
+
+Individual users can override styles for themselves by editing subpages of their user page:
+
+```
+User:ExampleUser/vector.css
+User:ExampleUser/vector.js
+User:ExampleUser/monobook.css
+```
+
+<Tip>
+Skin-specific CSS pages are only loaded when that skin is active. `MediaWiki:Common.css` is always loaded regardless of the active skin, making it the right place for styles that need to work everywhere.
+</Tip>
+
+## Skin preferences and user skin selection
+
+Registered users can choose their preferred skin in **Special:Preferences** under the **Appearance** tab. The choice is stored as a user option.
+
+The `Skin::normalizeKey()` method resolves a skin preference value to a loadable skin name, falling back through the configured default (`$wgDefaultSkin`) and then the hardcoded fallback skin if the preference is unavailable:
+
+```php includes/Skin/Skin.php
+public static function normalizeKey( string $key ) {
+    $config = MediaWikiServices::getInstance()->getMainConfig();
+    $defaultSkin = $config->get( MainConfigNames::DefaultSkin );
+    $fallbackSkin = $config->get( MainConfigNames::FallbackSkin );
+    $skinFactory = MediaWikiServices::getInstance()->getSkinFactory();
+    $skinNames = $skinFactory->getInstalledSkins();
+
+    // Make keys lowercase for case-insensitive matching.
+    $skinNames = array_change_key_case( $skinNames, CASE_LOWER );
+    $key = strtolower( $key );
+
+    if ( $key == '' || $key == 'default' ) {
+        $key = $defaultSkin;
+    }
+
+    if ( isset( $skinNames[$key] ) ) {
+        return $key;
+    }
+    // Falls back to $defaultSkin, then $fallbackSkin
+    ...
+}
+```
+
+Skins can also be hidden from the preferences list using `$wgSkipSkins` without uninstalling them:
+
+```php LocalSettings.php
+# Load the skin but hide it from user preferences
+$wgSkipSkins = [ 'myskin' ];
+```
+
+## Finding additional skins
+
+A full list of available skins is maintained at [MediaWiki.org](https://www.mediawiki.org/wiki/Special:MyLanguage/Category:All_skins). Most community skins are available via Gerrit and can be cloned directly into the `skins/` directory.
+
+```bash
+# Install the Vector skin from Gerrit
+git clone https://gerrit.wikimedia.org/g/mediawiki/extensions/Vector skins/Vector
+```
+
+Skin developers working with a separate checkout can use a symbolic link:
+
+```bash
+mediawiki/skins$ ln -s ../../skins-trunk/FooBar
+```

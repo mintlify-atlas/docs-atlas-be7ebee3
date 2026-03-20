@@ -1,0 +1,345 @@
+---
+title: "HookContainer API"
+description: "PHP API reference for HookContainer: running, registering, and testing hooks."
+---
+
+`HookContainer` (namespace `MediaWiki\HookContainer`, since MediaWiki 1.35) is the service responsible for maintaining hook handler lists and dispatching hook calls. It replaced the legacy `$wgHooks` global array as the canonical way to invoke and register hooks.
+
+## Obtaining HookContainer
+
+```php
+use MediaWiki\HookContainer\HookContainer;
+use MediaWiki\MediaWikiServices;
+
+// In a service constructor (preferred)
+class MyService {
+    private HookContainer $hookContainer;
+
+    public function __construct( HookContainer $hookContainer ) {
+        $this->hookContainer = $hookContainer;
+    }
+}
+
+// In static code (fallback only)
+$hookContainer = MediaWikiServices::getInstance()->getHookContainer();
+```
+
+## Core methods
+
+### `run()`
+
+```php
+public function run( string $hook, array $args = [], array $options = [] ): bool
+```
+
+Invokes all handlers registered for `$hook`, passing `$args` as arguments. Returns `true` if no handler aborted the call, or `false` if a handler returned `false` and the hook is abortable.
+
+**Parameters**
+
+<ParamField path="hook" type="string" required>
+  The hook name, e.g. `'PageSaveComplete'`.
+</ParamField>
+
+<ParamField path="args" type="array">
+  Positional arguments forwarded to every handler. Pass by-reference values as references in this array.
+</ParamField>
+
+<ParamField path="options" type="array">
+  Behaviour flags (see below).
+</ParamField>
+
+**`$options` keys**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `abortable` | `bool` | `true` | When `false`, handlers must not return `false`. If one does, `HookContainer` throws `UnexpectedValueException`. |
+| `noServices` | `bool` | `false` | When `true`, disallows handlers that declare service dependencies via `services` in their ObjectFactory spec. |
+| `deprecatedVersion` | `string` | — | Marks the hook as deprecated and triggers a deprecation warning when a non-acknowledging handler is found. |
+| `silent` | `bool` | `false` | Suppresses the deprecation warning even when `deprecatedVersion` is set. |
+
+**Return values**
+
+- `true` — All handlers ran to completion (or no handlers were registered).
+- `false` — A handler explicitly returned `false` (abortable hooks only).
+
+```php
+// Non-abortable hook — all handlers must run to completion
+$hookContainer->run( 'MediaWikiServices', [ $services ], [ 'abortable' => false ] );
+
+// Abortable hook — caller may act on the return value
+$ok = $hookContainer->run( 'PageSaveComplete', [ $wikiPage, $user, $summary ] );
+if ( !$ok ) {
+    // A handler aborted the save
+}
+
+// Hook that disallows service injection in handlers
+$hookContainer->run( 'SomeEarlyHook', [ $context ], [ 'noServices' => true ] );
+```
+
+### `isRegistered()`
+
+```php
+public function isRegistered( string $hook ): bool
+```
+
+Returns `true` if at least one handler is registered for `$hook`. Useful for skipping expensive preparation work when no extension is listening.
+
+```php
+if ( $hookContainer->isRegistered( 'BeforePageDisplay' ) ) {
+    // prepare data only if someone will use it
+    $hookContainer->run( 'BeforePageDisplay', [ $output, $skin ] );
+}
+```
+
+### `register()`
+
+```php
+public function register( string $hook, string|array|callable $handler ): void
+```
+
+Attaches a handler to a hook at runtime. Intended for use in tests and in legacy code that cannot use `extension.json`. The handler may be:
+
+1. A callable (string, array pair, or closure).
+2. An ObjectFactory extension handler spec (`[ 'handler' => [ 'class' => '...' ] ]`).
+3. A class instance with an `on{HookName}` method.
+4. `HookContainer::NOOP` to register an explicit no-op.
+
+```php
+// Register a closure
+$hookContainer->register( 'BeforePageDisplay', static function ( $out, $skin ) {
+    $out->addModules( 'ext.myExtension' );
+} );
+
+// Register an object with onBeforePageDisplay()
+$hookContainer->register( 'BeforePageDisplay', new MyHookHandler() );
+```
+
+### `scopedRegister()`
+
+```php
+#[\NoDiscard]
+public function scopedRegister( string $hook, callable|string|array $handler ): ScopedCallback
+```
+
+Registers a handler and returns a `ScopedCallback`. The handler is automatically removed when the callback goes out of scope or is explicitly destroyed. Designed for temporary registrations, especially in tests.
+
+```php
+$scope = $hookContainer->scopedRegister( 'PageSaveComplete', $myHandler );
+// ... handler is active here ...
+unset( $scope ); // handler is removed
+```
+
+### `clear()`
+
+```php
+public function clear( string $hook ): void
+```
+
+Removes all handlers for the given hook. Only callable inside PHPUnit tests (`MW_PHPUNIT_TEST` must be defined); throws `LogicException` in production.
+
+```php
+// In a PHPUnit test
+$this->getServiceContainer()->getHookContainer()->clear( 'PageSaveComplete' );
+```
+
+### `getHookNames()`
+
+```php
+public function getHookNames(): array
+```
+
+Returns a deduplicated list of all hook names that have at least one registered handler, across `$wgHooks`, `extension.json`, and runtime-registered handlers.
+
+## Hook runner classes
+
+Rather than calling `HookContainer::run()` directly, MediaWiki core uses typed *hook runner* classes that provide a method per hook. This gives IDE support and static analysis for hook arguments.
+
+MediaWiki core ships three runners:
+
+- `MediaWiki\HookContainer\HookRunner` — hooks called by general core code.
+- `MediaWiki\Api\ApiHookRunner` — hooks called by the Action API.
+- `MediaWiki\ResourceLoader\HookRunner` — hooks specific to ResourceLoader.
+
+```php
+use MediaWiki\HookContainer\HookRunner;
+use MediaWiki\MediaWikiServices;
+
+// Calling the PageSaveComplete hook via HookRunner
+$hookRunner = new HookRunner(
+    MediaWikiServices::getInstance()->getHookContainer()
+);
+$hookRunner->onPageSaveComplete( $wikiPage, $user, $summary, $flags, $revisionRecord, $editResult );
+```
+
+Extensions that call their own hooks should define their own runner class:
+
+```php
+namespace MediaWiki\Extension\MyExt;
+
+use MediaWiki\HookContainer\HookContainer;
+
+class HookRunner implements MyHookInterface {
+    private HookContainer $hookContainer;
+
+    public function __construct( HookContainer $hookContainer ) {
+        $this->hookContainer = $hookContainer;
+    }
+
+    public function onMash( string $banana ): void {
+        $this->hookContainer->run( 'Mash', [ $banana ], [ 'abortable' => false ] );
+    }
+}
+```
+
+## Registering hooks in extension.json
+
+The modern way to register hooks is through `extension.json`. Define a handler class under `HookHandlers`, then reference it in `Hooks`:
+
+```json
+{
+    "HookHandlers": {
+        "main": {
+            "class": "MediaWiki\\Extension\\FoodProcessor\\HookHandler",
+            "services": [ "ReadOnlyMode" ]
+        }
+    },
+    "Hooks": {
+        "Mash": "main"
+    }
+}
+```
+
+The handler class must implement the hook interface and provide the corresponding `on{HookName}` method:
+
+```php
+namespace MediaWiki\Extension\FoodProcessor;
+
+use MediaWiki\Hook\MashHook;
+use MediaWiki\ReadOnlyMode;
+
+class HookHandler implements MashHook {
+    private ReadOnlyMode $readOnlyMode;
+
+    public function __construct( ReadOnlyMode $readOnlyMode ) {
+        $this->readOnlyMode = $readOnlyMode;
+    }
+
+    public function onMash( string $banana ): void {
+        if ( $this->readOnlyMode->isReadOnly() ) {
+            return;
+        }
+        // handle the hook
+    }
+}
+```
+
+<Tip>
+Use a separate `HookHandlers` entry and a separate handler class for each hook. This ensures that services needed by one hook are not instantiated when an unrelated hook fires.
+</Tip>
+
+## Returning and aborting
+
+| Handler return value | Effect |
+|---|---|
+| `null` (no return) | Continue calling remaining handlers. |
+| `true` | Continue calling remaining handlers. |
+| `false` (abortable hook) | Stop immediately; `run()` returns `false`. |
+| `false` (non-abortable hook) | Throws `UnexpectedValueException`. |
+
+## Service dependencies and `noServices`
+
+ObjectFactory specs under `HookHandlers` can list `services` to inject:
+
+```json
+"HookHandlers": {
+    "main": {
+        "class": "MediaWiki\\Extension\\MyExt\\HookHandler",
+        "services": [ "RevisionStore", "UserGroupManager" ]
+    }
+}
+```
+
+When a hook is called with `[ 'noServices' => true ]`, any handler that declares `services` will cause `HookContainer` to throw an `UnexpectedValueException`. This option is used for hooks that fire very early in the request lifecycle before all services are available.
+
+## Hook deprecation
+
+Core hooks are deprecated by adding them to `DeprecatedHooks`. Extensions deprecate their own hooks via `extension.json`:
+
+```json
+"DeprecatedHooks": {
+    "Mash": {
+        "deprecatedVersion": "2.0",
+        "component": "FoodProcessor",
+        "silent": false
+    }
+}
+```
+
+Extensions acknowledge deprecation to opt in to call filtering:
+
+```json
+"Hooks": {
+    "Mash": {
+        "handler": "main",
+        "deprecated": true
+    }
+}
+```
+
+When `deprecated: true` is set and MediaWiki considers the hook deprecated, the handler is **not called** (filtered out). If MediaWiki does not yet know about the deprecation, the handler is called normally. This allows simultaneous forward and backward compatibility.
+
+## Testing hooks in PHPUnit
+
+<CodeGroup>
+
+```php Using scopedRegister()
+use MediaWikiIntegrationTestCase;
+
+class MyHookTest extends MediaWikiIntegrationTestCase {
+
+    public function testHookIsCalled(): void {
+        $called = false;
+        $scope = $this->getServiceContainer()
+            ->getHookContainer()
+            ->scopedRegister( 'PageSaveComplete',
+                static function () use ( &$called ) {
+                    $called = true;
+                }
+            );
+
+        // ... perform the action that triggers the hook ...
+
+        $this->assertTrue( $called );
+        // $scope goes out of scope here, handler is removed automatically
+    }
+}
+```
+
+```php Using clear() and register()
+use MediaWikiIntegrationTestCase;
+
+class MyHookIsolationTest extends MediaWikiIntegrationTestCase {
+
+    public function testWithClearedHook(): void {
+        $hookContainer = $this->getServiceContainer()->getHookContainer();
+
+        // Remove all existing handlers (test-only)
+        $hookContainer->clear( 'BeforePageDisplay' );
+
+        // Register a controlled handler
+        $hookContainer->register( 'BeforePageDisplay',
+            static function ( $out, $skin ) {
+                $out->addBodyClasses( 'test-class' );
+            }
+        );
+
+        // ... assert the expected behaviour ...
+    }
+}
+```
+
+</CodeGroup>
+
+<Note>
+`clear()` only works when `MW_PHPUNIT_TEST` is defined. In integration tests, the hook container is reset between test cases by the test framework, so `clear()` is rarely needed unless you want to isolate a specific test method from handlers registered globally.
+</Note>

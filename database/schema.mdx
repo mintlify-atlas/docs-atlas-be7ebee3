@@ -1,0 +1,374 @@
+---
+title: "Database Schema"
+description: "MediaWiki's database tables, the abstract schema format, and how to define extension tables."
+---
+
+MediaWiki defines its database schema using an **abstract schema** format — a database-agnostic JSON representation that generates correct DDL for MySQL/MariaDB, PostgreSQL, and SQLite. The canonical schema for all core tables lives in `sql/tables.json`.
+
+## The abstract schema format
+
+Each table is described as a JSON object with a `name`, an optional `comment`, a list of `columns`, a list of `indexes`, and a `pk` array naming the primary key columns.
+
+Column types are chosen from a fixed enum of abstract types that map to native types on each backend:
+
+| Abstract type | MySQL | PostgreSQL | SQLite |
+|---|---|---|---|
+| `integer` | `INT` | `INTEGER` | `INTEGER` |
+| `bigint` | `BIGINT` | `BIGINT` | `INTEGER` |
+| `binary` | `VARBINARY(n)` | `BYTEA` | `BLOB` |
+| `blob` | `BLOB` | `BYTEA` | `BLOB` |
+| `text` | `TEXT` | `TEXT` | `TEXT` |
+| `mwtimestamp` | `VARBINARY(14)` | `TIMESTAMPTZ` | `BLOB` |
+| `mwtinyint` | `TINYINT` | `SMALLINT` | `INTEGER` |
+| `mwenum` | `ENUM(...)` | `TEXT` | `TEXT` |
+| `float` | `FLOAT` | `FLOAT` | `REAL` |
+
+A minimal table definition looks like this:
+
+```json
+{
+  "name": "my_table",
+  "comment": "Stores data for MyExtension.",
+  "columns": [
+    {
+      "name": "mt_id",
+      "comment": "Primary key",
+      "type": "integer",
+      "options": {
+        "unsigned": true,
+        "notnull": true,
+        "autoincrement": true
+      }
+    },
+    {
+      "name": "mt_page_id",
+      "comment": "Key to page.page_id",
+      "type": "integer",
+      "options": {
+        "unsigned": true,
+        "notnull": true
+      }
+    },
+    {
+      "name": "mt_data",
+      "type": "blob",
+      "options": {
+        "length": 65530,
+        "notnull": true
+      }
+    }
+  ],
+  "indexes": [
+    {
+      "name": "mt_page_id",
+      "columns": [ "mt_page_id" ],
+      "unique": false
+    }
+  ],
+  "pk": [ "mt_id" ]
+}
+```
+
+### Column options
+
+| Option | Type | Description |
+|---|---|---|
+| `notnull` | boolean | Whether the column is `NOT NULL`. Defaults to `true`. |
+| `autoincrement` | boolean | Auto-incrementing primary key. Defaults to `false`. |
+| `default` | string \| number \| null | Default value for the column. |
+| `length` | number | Maximum length for variable-length types. |
+| `unsigned` | boolean | Unsigned integer. Defaults to `false`. |
+| `fixed` | boolean | Fixed-length binary/string column. |
+| `PlatformOptions.allowInfinite` | boolean | Allow `'infinity'` as a timestamp value. |
+| `PlatformOptions.enum_values` | array | Values for `mwenum` columns. |
+| `PlatformOptions.doublePrecision` | boolean | Use double precision for `float` columns. |
+
+## Core tables reference
+
+### Content tables
+
+<AccordionGroup>
+  <Accordion title="page">
+    The core of the wiki. Each page has exactly one row, identified by `page_namespace` and `page_title`. The `page_id` is stable across edits and renames, but not across deletions and recreations.
+
+    Key columns:
+    - `page_id` — Stable unique identifier
+    - `page_namespace` — Integer namespace key (defined in `includes/Defines.php`)
+    - `page_title` — Title with spaces replaced by underscores, max 255 bytes
+    - `page_is_redirect` — 1 if a redirect; a corresponding row exists in the `redirect` table
+    - `page_latest` — Foreign key to `revision.rev_id` of the current revision
+    - `page_len` — Uncompressed length in bytes of the current source text
+    - `page_touched` — Invalidation timestamp for rendered caches
+    - `page_content_model` — Content model identifier (e.g. `wikitext`, `json`)
+
+    Primary key: `page_id`. Unique index on `(page_namespace, page_title)`.
+
+    ```json
+    {
+      "name": "page",
+      "comment": "Core of the wiki: each page has an entry here which identifies it by title and contains some essential metadata.",
+      "columns": [
+        { "name": "page_id",        "type": "integer",     "options": { "unsigned": true, "notnull": true, "autoincrement": true } },
+        { "name": "page_namespace", "type": "integer",     "options": { "notnull": true } },
+        { "name": "page_title",     "type": "binary",      "options": { "notnull": true, "length": 255 } },
+        { "name": "page_latest",    "type": "integer",     "options": { "unsigned": true, "notnull": true } },
+        { "name": "page_len",       "type": "integer",     "options": { "unsigned": true, "notnull": true } },
+        { "name": "page_touched",   "type": "mwtimestamp", "options": { "notnull": true } }
+      ],
+      "indexes": [
+        { "name": "page_name_title", "columns": [ "page_namespace", "page_title" ], "unique": true }
+      ],
+      "pk": [ "page_id" ]
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="revision">
+    Every edit creates a row in `revision`. Stores metadata about the edit; content is stored in the external storage backend.
+
+    Key columns:
+    - `rev_id` — Unique identifier (`bigint`, autoincrement)
+    - `rev_page` — Foreign key to `page.page_id`
+    - `rev_actor` — Foreign key to `actor.actor_id` (the editor)
+    - `rev_comment_id` — Foreign key to `comment.comment_id` (edit summary)
+    - `rev_timestamp` — When the revision was created
+    - `rev_minor_edit` — 1 if the editor checked "minor edit"
+    - `rev_deleted` — Bitmask of visibility restrictions
+    - `rev_parent_id` — Foreign key to previous `rev_id` (forms the edit history tree)
+
+    Indexes: `rev_page_timestamp` (history), `rev_actor_timestamp` (contributions), `rev_page_actor_timestamp` (credits).
+  </Accordion>
+
+  <Accordion title="actor">
+    Associates user names or IP addresses with integer IDs used by `revision`, `archive`, `recentchanges`, and other tables.
+
+    Key columns:
+    - `actor_id` — Unique identifier (`bigint`)
+    - `actor_user` — Foreign key to `user.user_id`, or `NULL` for anonymous edits
+    - `actor_name` — Username or IP address (max 255 bytes)
+
+    Unique indexes on both `actor_user` and `actor_name`.
+  </Accordion>
+
+  <Accordion title="archive">
+    Stores deleted pages and their revisions. Admins can view and restore entries via Special:Undelete.
+
+    Key columns mirror `revision`: `ar_namespace`, `ar_title`, `ar_rev_id`, `ar_actor`, `ar_timestamp`, `ar_deleted`, `ar_page_id`.
+  </Accordion>
+</AccordionGroup>
+
+### User tables
+
+<AccordionGroup>
+  <Accordion title="user">
+    Basic account information for registered users. Some multi-wiki sites share a single central user table via `$wgSharedDB`.
+
+    Key columns:
+    - `user_id` — Primary key
+    - `user_name` — Unique username; spaces allowed, not converted to underscores
+    - `user_real_name` — Optional display name for credit listings
+    - `user_password` — Hashed password
+    - `user_email` — Non-public email address
+    - `user_touched` — Invalidation timestamp for the browser cache of logged-in users
+    - `user_editcount` — Approximate count; may be out of sync with actual revision count
+    - `user_registration` — Timestamp of account registration (NULL for old accounts)
+    - `user_is_temp` — 1 for temporary (auto-created) users
+  </Accordion>
+
+  <Accordion title="watchlist">
+    Tracks which pages each user is watching.
+
+    Key columns:
+    - `wl_id` — Primary key
+    - `wl_user` — Foreign key to `user.user_id`
+    - `wl_namespace`, `wl_title` — The watched page
+    - `wl_notificationtimestamp` — Timestamp of the earliest unseen revision, or `NULL` if current revision is seen
+
+    Unique index on `(wl_user, wl_namespace, wl_title)` used by Special:Watchlist.
+  </Accordion>
+</AccordionGroup>
+
+### Link tracking tables
+
+<AccordionGroup>
+  <Accordion title="categorylinks">
+    Tracks category membership. One row per (page, category) pair.
+
+    Key columns:
+    - `cl_from` — Foreign key to `page.page_id`
+    - `cl_target_id` — Foreign key to `linktarget.lt_id`
+    - `cl_sortkey` — Binary sortkey for ordering members within a category
+    - `cl_type` — `'page'`, `'subcat'`, or `'file'` (for paginating category members)
+    - `cl_collation_id` — Foreign key to collation
+  </Accordion>
+
+  <Accordion title="imagelinks">
+    Tracks images used inline on pages. Does not distinguish live from broken links.
+
+    Key columns:
+    - `il_from` — Foreign key to `page.page_id` of the containing page
+    - `il_from_namespace` — Namespace of the containing page
+    - `il_target_id` — Foreign key to `linktarget.lt_id`
+
+    Reverse index on `(il_target_id, il_from)` used by Special:Whatlinkshere and file description page usage listings.
+  </Accordion>
+
+  <Accordion title="templatelinks">
+    Tracks template transclusions. Updated whenever a page is parsed.
+  </Accordion>
+</AccordionGroup>
+
+### Activity tables
+
+<AccordionGroup>
+  <Accordion title="recentchanges">
+    A summary table for Special:RecentChanges. Contains edits from the last few days (older entries are pruned by maintenance scripts).
+
+    Key columns:
+    - `rc_id` — Primary key (`bigint`)
+    - `rc_timestamp` — When the change occurred
+    - `rc_actor` — Foreign key to `actor.actor_id`
+    - `rc_namespace`, `rc_title` — The changed page (not updated on moves)
+    - `rc_this_oldid` — `rev_id` of the new revision
+    - `rc_last_oldid` — `rev_id` of the previous revision (for diff links)
+    - `rc_source` — Source of the change entry
+    - `rc_patrolled` — 1 when an admin has reviewed the edit
+    - `rc_bot` — 1 for edits by accounts with the `bot` right
+    - `rc_cur_id` — Foreign key to `page.page_id`
+  </Accordion>
+
+  <Accordion title="change_tag">
+    Tracks tags for revisions, log entries, and recent changes.
+
+    Key columns:
+    - `ct_tag_id` — Foreign key to `change_tag_def`
+    - `ct_rc_id` — Foreign key to `recentchanges.rc_id` (nullable)
+    - `ct_rev_id` — Foreign key to `revision.rev_id` (nullable)
+    - `ct_log_id` — Foreign key to `logging.log_id` (nullable)
+  </Accordion>
+</AccordionGroup>
+
+## Schema migrations
+
+Schema changes are applied by running `maintenance/update.php`. Each change is described by a migration patch file in `sql/abstractSchemaChanges/`.
+
+A migration patch has `before` and `after` objects — each a full table definition. An empty `before` object (`{}`) signals table creation.
+
+```json
+{
+  "comment": "Migrate rev_id and rev_parent_id to bigint",
+  "before": {
+    "name": "revision",
+    "columns": [
+      { "name": "rev_id",        "type": "integer", "options": { "unsigned": true, "notnull": true, "autoincrement": true } },
+      { "name": "rev_parent_id", "type": "integer", "options": { "unsigned": true, "notnull": false } }
+    ],
+    "indexes": [],
+    "pk": [ "rev_id" ]
+  },
+  "after": {
+    "name": "revision",
+    "columns": [
+      { "name": "rev_id",        "type": "bigint", "options": { "unsigned": true, "notnull": true, "autoincrement": true } },
+      { "name": "rev_parent_id", "type": "bigint", "options": { "unsigned": true, "notnull": false } }
+    ],
+    "indexes": [],
+    "pk": [ "rev_id" ]
+  }
+}
+```
+
+<Steps>
+  <Step title="Write the patch file">
+    Create a file in `sql/abstractSchemaChanges/` named `patch-<description>.json`. Define the `before` and `after` table states.
+  </Step>
+  <Step title="Register it">
+    Add the patch to the `$updates` array in the relevant `updater` hook or directly in `DatabaseUpdater`.
+  </Step>
+  <Step title="Apply it">
+    Run `php maintenance/update.php` to apply pending patches. The updater compares the current schema state and only runs patches that have not yet been applied.
+  </Step>
+</Steps>
+
+## Defining tables in extensions
+
+Extensions declare their database tables in `extension.json` using the `$schema` key inside a `DatabaseSchema` definition, pointing to an abstract schema JSON file.
+
+```json
+{
+  "name": "MyExtension",
+  "DatabaseSchema": {
+    "tables": "sql/tables.json",
+    "patches": "sql/abstractSchemaChanges"
+  }
+}
+```
+
+The extension's `sql/tables.json` follows the same format as core's `sql/tables.json` — an array of table definitions:
+
+```json
+[
+  {
+    "name": "myextension_data",
+    "comment": "Storage for MyExtension page data.",
+    "columns": [
+      {
+        "name": "med_id",
+        "type": "integer",
+        "options": { "unsigned": true, "notnull": true, "autoincrement": true }
+      },
+      {
+        "name": "med_page_id",
+        "comment": "Key to page.page_id",
+        "type": "integer",
+        "options": { "unsigned": true, "notnull": true }
+      },
+      {
+        "name": "med_value",
+        "type": "blob",
+        "options": { "length": 65530, "notnull": true }
+      },
+      {
+        "name": "med_timestamp",
+        "type": "mwtimestamp",
+        "options": { "notnull": true }
+      }
+    ],
+    "indexes": [
+      {
+        "name": "med_page_id",
+        "columns": [ "med_page_id" ],
+        "unique": false
+      }
+    ],
+    "pk": [ "med_id" ]
+  }
+]
+```
+
+When a user installs your extension and runs `maintenance/update.php`, MediaWiki creates any missing tables automatically.
+
+<Tip>
+  Prefix extension table column names with a short extension-specific prefix (e.g. `med_` for MyExtensionData) to avoid collisions with core columns and to make it obvious which table a column belongs to.
+</Tip>
+
+## Database-specific SQL
+
+The abstract schema system generates DDL automatically, but if you need raw SQL for complex operations not supported by the query builders, place database-specific SQL files in subdirectories:
+
+```
+sql/
+  tables.json          # Abstract schema (canonical)
+  mysql/
+    tables-generated.sql
+  postgres/
+    tables-generated.sql
+  sqlite/
+    tables-generated.sql
+  abstractSchemaChanges/
+    patch-my-change.json
+```
+
+<Warning>
+  Hand-written SQL in the `mysql/`, `postgres/`, and `sqlite/` directories is generated from `tables.json` and should not be edited manually. Always edit the abstract schema and regenerate the SQL files.
+</Warning>

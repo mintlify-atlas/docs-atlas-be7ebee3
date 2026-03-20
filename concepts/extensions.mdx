@@ -1,0 +1,247 @@
+---
+title: "Extensions Overview"
+description: "How MediaWiki extensions work and how they integrate with the core framework."
+---
+
+Extensions add functionality to MediaWiki without modifying core files. They integrate with MediaWiki through a standardized registration system based on `extension.json` and a set of well-defined extension points including hooks, services, special pages, resource modules, and more.
+
+## Loading an Extension
+
+Extensions are loaded in `LocalSettings.php` using `wfLoadExtension()`:
+
+```php
+// In LocalSettings.php
+wfLoadExtension( 'FoodProcessor' );
+```
+
+This tells MediaWiki to read `extensions/FoodProcessor/extension.json` and register everything the extension declares.
+
+## extension.json Structure
+
+Every extension must have an `extension.json` file at its root. The file conforms to the MediaWiki extension schema (v2).
+
+### Required Fields
+
+```json
+{
+    "manifest_version": 2,
+    "name": "FoodProcessor"
+}
+```
+
+Only `manifest_version` and `name` are required. All other fields are optional.
+
+### Identification Fields
+
+```json
+{
+    "manifest_version": 2,
+    "name": "FoodProcessor",
+    "version": "1.0.0",
+    "author": [ "Alice Smith", "Bob Jones" ],
+    "url": "https://www.mediawiki.org/wiki/Extension:FoodProcessor",
+    "description": "Processes food-related wiki content.",
+    "license-name": "GPL-2.0-or-later",
+    "type": "parserhook"
+}
+```
+
+The `type` field categorizes the extension. Common values include `api`, `antispam`, `editor`, `media`, `parserhook`, `semantic`, `specialpage`, and `other`.
+
+### Version Constraints with `requires`
+
+Use the `requires` field to declare minimum versions of MediaWiki, PHP, or other extensions:
+
+```json
+{
+    "requires": {
+        "MediaWiki": ">= 1.39.0",
+        "platform": {
+            "php": ">= 8.0"
+        },
+        "extensions": {
+            "AnotherExtension": ">= 2.0.0"
+        }
+    }
+}
+```
+
+Version constraint strings follow semantic versioning operators (`>=`, `<`, `~`, etc.). The `requires.MediaWiki` field is checked at load time and will prevent the extension from loading if the constraint is not satisfied.
+
+### AutoloadNamespaces (PSR-4)
+
+Map PHP namespaces to directories for autoloading:
+
+```json
+{
+    "AutoloadNamespaces": {
+        "MediaWiki\\Extension\\FoodProcessor\\": "includes/"
+    }
+}
+```
+
+Namespace keys must end with a backslash, and directory values must end with a forward slash. This enables PSR-4 autoloading for all classes under the given namespace.
+
+<Note>
+`AutoloadNamespaces` is for PSR-4 autoloading. The older `AutoloadClasses` field maps individual class names to file paths and is still supported but not recommended for new extensions.
+</Note>
+
+### MessagesDirs for i18n
+
+Point to directories containing JSON internationalization files:
+
+```json
+{
+    "MessagesDirs": {
+        "FoodProcessor": [
+            "i18n"
+        ]
+    }
+}
+```
+
+The directory should contain files like `en.json`, `de.json`, etc. Each file maps message keys to their localized strings:
+
+```json
+{
+    "@metadata": { "authors": [ "Alice" ] },
+    "foodprocessor-mash-label": "Mash",
+    "foodprocessor-mash-desc": "Mash the selected items."
+}
+```
+
+### Hooks and HookHandlers
+
+Register hook handlers using the new-style `HookHandlers` + `Hooks` pair:
+
+```json
+{
+    "HookHandlers": {
+        "main": {
+            "class": "MediaWiki\\Extension\\FoodProcessor\\HookHandler",
+            "services": [ "RevisionStore" ]
+        }
+    },
+    "Hooks": {
+        "ArticleSaveComplete": "main",
+        "ParserFirstCallInit": "main"
+    }
+}
+```
+
+See the [Hook System](/concepts/hooks) page for full details on handler classes, service injection, and deprecation.
+
+### ServiceWiringFiles
+
+Register additional service wiring files:
+
+```json
+{
+    "ServiceWiringFiles": [
+        "includes/ServiceWiring.php"
+    ]
+}
+```
+
+See the [Service Container](/concepts/services) page for how to write service wiring.
+
+### ResourceModules
+
+Register JavaScript and CSS via ResourceLoader:
+
+```json
+{
+    "ResourceFileModulePaths": {
+        "localBasePath": "modules",
+        "remoteExtPath": "FoodProcessor/modules"
+    },
+    "ResourceModules": {
+        "ext.foodprocessor.main": {
+            "scripts": [ "foodprocessor.js" ],
+            "styles": [ "foodprocessor.css" ],
+            "messages": [
+                "foodprocessor-mash-label"
+            ],
+            "dependencies": [ "mediawiki.api" ]
+        }
+    }
+}
+```
+
+`localBasePath` is relative to the extension root. `remoteExtPath` is relative to `$wgExtensionAssetsPath` on the client. Module names should use the `ext.<extensionname>.<module>` convention.
+
+## Complete Example
+
+```json
+{
+    "manifest_version": 2,
+    "name": "FoodProcessor",
+    "version": "1.0.0",
+    "author": "Alice Smith",
+    "url": "https://www.mediawiki.org/wiki/Extension:FoodProcessor",
+    "description": "Processes food-related wiki content.",
+    "license-name": "GPL-2.0-or-later",
+    "type": "parserhook",
+    "requires": {
+        "MediaWiki": ">= 1.39.0",
+        "platform": {
+            "php": ">= 8.0"
+        }
+    },
+    "AutoloadNamespaces": {
+        "MediaWiki\\Extension\\FoodProcessor\\": "includes/"
+    },
+    "MessagesDirs": {
+        "FoodProcessor": [ "i18n" ]
+    },
+    "HookHandlers": {
+        "main": {
+            "class": "MediaWiki\\Extension\\FoodProcessor\\HookHandler"
+        }
+    },
+    "Hooks": {
+        "ParserFirstCallInit": "main"
+    },
+    "ServiceWiringFiles": [
+        "includes/ServiceWiring.php"
+    ],
+    "ResourceFileModulePaths": {
+        "localBasePath": "modules",
+        "remoteExtPath": "FoodProcessor/modules"
+    },
+    "ResourceModules": {
+        "ext.foodprocessor.main": {
+            "scripts": [ "foodprocessor.js" ],
+            "styles": [ "foodprocessor.css" ]
+        }
+    }
+}
+```
+
+## Extension Registration Internals
+
+The `includes/Registration/` directory contains the classes that process `extension.json`:
+
+| File | Role |
+|---|---|
+| `ExtensionRegistry.php` | Singleton registry; reads and caches extension data |
+| `ExtensionProcessor.php` | Parses `extension.json` and merges data into core |
+| `ExtensionJsonValidator.php` | Validates `extension.json` against the schema |
+| `VersionChecker.php` | Evaluates `requires` version constraints |
+| `Processor.php` | Base class for extension and skin processors |
+
+<Tip>
+To check at runtime whether an extension is loaded, use:
+
+```php
+use MediaWiki\Registration\ExtensionRegistry;
+
+if ( ExtensionRegistry::getInstance()->isLoaded( 'FoodProcessor' ) ) {
+    // extension is present
+}
+```
+</Tip>
+
+## Extension vs. Skin
+
+Skins use the same `wfLoadSkin()` mechanism and a `skin.json` file with an identical structure. The `type` field in `extension.json` can be `"skin"`, but conventionally skins use `skin.json` so they appear separately in Special:Version. See the [Skins](/concepts/skins) page for details.

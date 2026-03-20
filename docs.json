@@ -1,122 +1,106 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "MediaWiki",
+  "theme": "linden",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#fc7f04",
+    "light": "#870455",
+    "dark": "#db5551"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "https://media.brand.dev/5dd96de7-dd44-4616-b74f-daa7f253f66f.svg",
+  "logo": {
+    "light": "https://media.brand.dev/4793eb12-66fe-4d0f-9ba9-cfa410f80583.png",
+    "dark": "https://media.brand.dev/4793eb12-66fe-4d0f-9ba9-cfa410f80583.png"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/wikimedia/mediawiki"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/wikimedia/mediawiki"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Getting Started",
         "groups": [
           {
-            "group": "Getting started",
-            "pages": [
-              "index",
-              "quickstart",
-              "development"
-            ]
+            "group": "Overview",
+            "pages": ["introduction", "quickstart", "architecture"]
           },
           {
-            "group": "Customization",
-            "pages": [
-              "essentials/settings",
-              "essentials/navigation"
-            ]
+            "group": "Installation",
+            "pages": ["installation/requirements", "installation/setup", "installation/configuration"]
           },
           {
-            "group": "Writing content",
-            "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
-            ]
-          },
-          {
-            "group": "AI tools",
-            "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
-            ]
+            "group": "Core Concepts",
+            "pages": ["concepts/hooks", "concepts/services", "concepts/extensions", "concepts/skins"]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Developer Guide",
         "groups": [
           {
-            "group": "API documentation",
-            "pages": [
-              "api-reference/introduction"
-            ]
+            "group": "Extensions",
+            "pages": ["extensions/overview", "extensions/extension-json", "extensions/hooks", "extensions/services"]
           },
           {
-            "group": "Endpoint examples",
-            "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
-            ]
+            "group": "Database",
+            "pages": ["database/overview", "database/schema", "database/querying"]
+          },
+          {
+            "group": "Parser & Content",
+            "pages": ["parser/overview", "parser/content-handlers", "parser/magic-words"]
+          },
+          {
+            "group": "ResourceLoader",
+            "pages": ["resourceloader/overview", "resourceloader/modules", "resourceloader/javascript"]
+          },
+          {
+            "group": "Skins",
+            "pages": ["skins/overview", "skins/development", "skins/templating"]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "REST API",
+            "pages": ["api/rest/overview", "api/rest/pages", "api/rest/revisions", "api/rest/search"]
+          },
+          {
+            "group": "Action API",
+            "pages": ["api/action/overview", "api/action/query", "api/action/edit", "api/action/authentication"]
+          },
+          {
+            "group": "PHP Services",
+            "pages": ["api/services/mediawiki-services", "api/services/hook-container", "api/services/title"]
+          }
+        ]
+      },
+      {
+        "tab": "Operations",
+        "groups": [
+          {
+            "group": "Maintenance",
+            "pages": ["operations/maintenance-scripts", "operations/jobs", "operations/caching"]
+          },
+          {
+            "group": "Security",
+            "pages": ["operations/security", "operations/permissions", "operations/authentication"]
+          },
+          {
+            "group": "Upgrade",
+            "pages": ["operations/upgrade", "operations/migration"]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

@@ -1,0 +1,305 @@
+---
+title: "MediaWikiServices Reference"
+description: "Complete reference for the MediaWikiServices dependency injection container and all available services."
+---
+
+`MediaWikiServices` is the central dependency injection (DI) container for MediaWiki core, introduced in MediaWiki 1.27. It extends `Wikimedia\Services\ServiceContainer` and provides typed accessor methods for every registered service. Default service implementations are wired in `includes/ServiceWiring.php`.
+
+<Note>
+Objects that need a service should receive it via constructor injection, not by calling `MediaWikiServices::getInstance()` directly inside a method. Use `getInstance()` only in static entry points (hooks registered via `$wgHooks`, maintenance scripts, etc.) where constructor injection is not possible.
+</Note>
+
+## Accessing the container
+
+```php
+use MediaWiki\MediaWikiServices;
+
+// Retrieve the global instance (static entry points only)
+$services = MediaWikiServices::getInstance();
+
+// Check whether the container has been initialised yet
+if ( MediaWikiServices::hasInstance() ) {
+    $revisionStore = MediaWikiServices::getInstance()->getRevisionStore();
+}
+```
+
+<Warning>
+Calling `getInstance()` before `allowGlobalInstance()` is called during bootstrap will throw a `LogicException` in PHPUnit tests and emit a deprecation warning in production. Never call it from service constructors or wiring files.
+</Warning>
+
+## Constructor injection (recommended)
+
+Services should declare their dependencies as constructor parameters so that the DI container can provide them automatically.
+
+```php
+use MediaWiki\Page\PageStore;
+use MediaWiki\Revision\RevisionStore;
+
+class MyService {
+    private PageStore $pageStore;
+    private RevisionStore $revisionStore;
+
+    public function __construct(
+        PageStore $pageStore,
+        RevisionStore $revisionStore
+    ) {
+        $this->pageStore = $pageStore;
+        $this->revisionStore = $revisionStore;
+    }
+}
+```
+
+In `ServiceWiring.php`, wire the service by pulling its dependencies from the container:
+
+```php
+'MyService' => static function ( MediaWikiServices $services ): MyService {
+    return new MyService(
+        $services->getPageStore(),
+        $services->getRevisionStore()
+    );
+},
+```
+
+## Service categories
+
+<AccordionGroup>
+  <Accordion title="Page services">
+
+| Accessor | Return type | Since |
+|---|---|---|
+| `getPageStore()` | `PageStore` | 1.36 |
+| `getPageStoreFactory()` | `PageStoreFactory` | 1.36 |
+| `getRevisionStore()` | `RevisionStore` | 1.31 |
+| `getRevisionLookup()` | `RevisionLookup` | 1.31 |
+| `getRevisionFactory()` | `RevisionFactory` | 1.31 |
+| `getRevisionRenderer()` | `RevisionRenderer` | 1.32 |
+| `getRevisionStoreFactory()` | `RevisionStoreFactory` | 1.32 |
+| `getArchivedRevisionLookup()` | `ArchivedRevisionLookup` | 1.38 |
+| `getWikiPageFactory()` | `WikiPageFactory` | 1.36 |
+| `getPageUpdaterFactory()` | `PageUpdaterFactory` | 1.37 |
+| `getPageProps()` | `PageProps` | 1.36 |
+| `getRedirectLookup()` | `RedirectLookup` | 1.38 |
+| `getRedirectStore()` | `RedirectStore` | 1.38 |
+| `getDeletePageFactory()` | `DeletePageFactory` | 1.37 |
+| `getMovePageFactory()` | `MovePageFactory` | 1.34 |
+| `getMergeHistoryFactory()` | `MergeHistoryFactory` | 1.35 |
+| `getRollbackPageFactory()` | `RollbackPageFactory` | 1.37 |
+| `getUndeletePageFactory()` | `UndeletePageFactory` | 1.38 |
+| `getParserOutputAccess()` | `ParserOutputAccess` | 1.36 |
+
+  </Accordion>
+  <Accordion title="User services">
+
+| Accessor | Return type | Since |
+|---|---|---|
+| `getUserFactory()` | `UserFactory` | 1.35 |
+| `getUserGroupManager()` | `UserGroupManager` | 1.35 |
+| `getUserGroupManagerFactory()` | `UserGroupManagerFactory` | 1.35 |
+| `getUserOptionsLookup()` | `UserOptionsLookup` | 1.35 |
+| `getUserOptionsManager()` | `UserOptionsManager` | 1.35 |
+| `getUserIdentityLookup()` | `UserIdentityLookup` | 1.36 |
+| `getUserIdentityUtils()` | `UserIdentityUtils` | 1.41 |
+| `getUserNameUtils()` | `UserNameUtils` | 1.35 |
+| `getUserNamePrefixSearch()` | `UserNamePrefixSearch` | 1.36 |
+| `getUserEditTracker()` | `UserEditTracker` | 1.35 |
+| `getUserRegistrationLookup()` | `UserRegistrationLookup` | 1.41 |
+| `getActorStore()` | `ActorStore` | 1.36 |
+| `getActorStoreFactory()` | `ActorStoreFactory` | 1.36 |
+| `getCentralIdLookup()` | `CentralIdLookup` | 1.37 |
+| `getCentralIdLookupFactory()` | `CentralIdLookupFactory` | 1.37 |
+| `getTempUserCreator()` | `TempUserCreator` | 1.39 |
+| `getTempUserConfig()` | `RealTempUserConfig` | 1.39 |
+
+  </Accordion>
+  <Accordion title="Database services">
+
+| Accessor | Return type | Since | Notes |
+|---|---|---|---|
+| `getConnectionProvider()` | `IConnectionProvider` | 1.42 | Preferred over `getDBLoadBalancer()` |
+| `getDBLoadBalancer()` | `ILoadBalancer` | 1.28 | Main DB load balancer |
+| `getDBLoadBalancerFactory()` | `LBFactory` | 1.28 | Use `getConnectionProvider()` where possible |
+| `getDatabaseFactory()` | `DatabaseFactory` | 1.39 | |
+| `getBlobStore()` | `BlobStore` | 1.31 | |
+| `getBlobStoreFactory()` | `BlobStoreFactory` | 1.31 | |
+
+The preferred pattern for database access since MediaWiki 1.42 is `IConnectionProvider`:
+
+```php
+use Wikimedia\Rdbms\IConnectionProvider;
+
+class MyRepository {
+    private IConnectionProvider $dbProvider;
+
+    public function __construct( IConnectionProvider $dbProvider ) {
+        $this->dbProvider = $dbProvider;
+    }
+
+    public function fetchRow( int $id ): ?array {
+        $dbr = $this->dbProvider->getReplicaDatabase();
+        return $dbr->newSelectQueryBuilder()
+            ->select( [ 'page_id', 'page_title' ] )
+            ->from( 'page' )
+            ->where( [ 'page_id' => $id ] )
+            ->fetchRow() ?: null;
+    }
+}
+```
+
+  </Accordion>
+  <Accordion title="Content and parsing services">
+
+| Accessor | Return type | Since |
+|---|---|---|
+| `getContentHandlerFactory()` | `IContentHandlerFactory` | 1.35 |
+| `getContentRenderer()` | `ContentRenderer` | 1.38 |
+| `getContentTransformer()` | `ContentTransformer` | 1.37 |
+| `getParserFactory()` | `ParserFactory` | 1.32 |
+| `getParser()` | `Parser` | 1.29 |
+| `getParserCache()` | `ParserCache` | 1.30 |
+| `getParserCacheFactory()` | `ParserCacheFactory` | 1.36 |
+| `getMagicWordFactory()` | `MagicWordFactory` | 1.32 |
+| `getParsoidParserFactory()` | `ParsoidParserFactory` | 1.41 |
+
+<Note>
+Do not call `getParser()` from within services or service wiring. Use `getParserFactory()->create()` to obtain a fresh `Parser` instance instead.
+</Note>
+
+  </Accordion>
+  <Accordion title="Auth and permissions services">
+
+| Accessor | Return type | Since |
+|---|---|---|
+| `getAuthManager()` | `AuthManager` | 1.35 |
+| `getBlockManager()` | `BlockManager` | 1.34 |
+| `getPermissionManager()` | `PermissionManager` | 1.33 |
+| `getGroupPermissionsLookup()` | `GroupPermissionsLookup` | 1.36 |
+| `getRestrictionStore()` | `RestrictionStore` | 1.37 |
+| `getRateLimiter()` | `RateLimiter` | 1.39 |
+| `getBlockUserFactory()` | `BlockUserFactory` | 1.36 |
+| `getUnblockUserFactory()` | `UnblockUserFactory` | 1.36 |
+| `getDatabaseBlockStore()` | `DatabaseBlockStore` | 1.36 |
+| `getPasswordFactory()` | `PasswordFactory` | 1.32 |
+| `getPasswordReset()` | `PasswordReset` | 1.34 |
+
+  </Accordion>
+  <Accordion title="Caching services">
+
+| Accessor | Return type | Since | Notes |
+|---|---|---|---|
+| `getMainWANObjectCache()` | `WANObjectCache` | 1.28 | Cross-datacenter WAN cache |
+| `getLocalServerObjectCache()` | `BagOStuff` | 1.28 | Per-server cache |
+| `getMainObjectStash()` | `BagOStuff` | 1.28 | Global stash |
+| `getObjectCacheFactory()` | `ObjectCacheFactory` | 1.42 | |
+| `getLinkCache()` | `LinkCache` | 1.28 | |
+| `getParserCache()` | `ParserCache` | 1.30 | |
+| `getLocalisationCache()` | `LocalisationCache` | 1.34 | |
+| `getMessageCache()` | `MessageCache` | 1.34 | |
+
+  </Accordion>
+  <Accordion title="Search services">
+
+| Accessor | Return type | Since |
+|---|---|---|
+| `getSearchEngineFactory()` | `SearchEngineFactory` | 1.27 |
+| `getSearchEngineConfig()` | `SearchEngineConfig` | 1.27 |
+| `newSearchEngine()` | `SearchEngine` | 1.27 |
+| `getTitleMatcher()` | `TitleMatcher` | 1.40 |
+
+`newSearchEngine()` returns a new instance on every call because search engine objects maintain internal state.
+
+  </Accordion>
+  <Accordion title="HTTP services">
+
+| Accessor | Return type | Since |
+|---|---|---|
+| `getHttpRequestFactory()` | `HttpRequestFactory` | 1.31 |
+| `getUrlUtils()` | `UrlUtils` | 1.39 |
+| `getProxyLookup()` | `ProxyLookup` | 1.28 |
+
+  </Accordion>
+  <Accordion title="Other core services">
+
+| Accessor | Return type | Since |
+|---|---|---|
+| `getHookContainer()` | `HookContainer` | 1.35 |
+| `getTitleFormatter()` | `TitleFormatter` | 1.28 |
+| `getTitleParser()` | `TitleParser` | 1.28 |
+| `getTitleFactory()` | `TitleFactory` | 1.35 |
+| `getLinkRenderer()` | `LinkRenderer` | 1.28 |
+| `getLinkRendererFactory()` | `LinkRendererFactory` | 1.28 |
+| `getJobQueueGroup()` | `JobQueueGroup` | 1.37 |
+| `getJobQueueGroupFactory()` | `JobQueueGroupFactory` | 1.37 |
+| `getJobFactory()` | `JobFactory` | 1.40 |
+| `getJobRunner()` | `JobRunner` | 1.35 |
+| `getLanguageFactory()` | `LanguageFactory` | 1.35 |
+| `getLanguageConverterFactory()` | `LanguageConverterFactory` | 1.35 |
+| `getLanguageNameUtils()` | `LanguageNameUtils` | 1.34 |
+| `getNamespaceInfo()` | `NamespaceInfo` | 1.34 |
+| `getConfigFactory()` | `ConfigFactory` | 1.27 |
+| `getMainConfig()` | `Config` | 1.27 |
+| `getObjectFactory()` | `ObjectFactory` | 1.34 |
+| `getSpecialPageFactory()` | `SpecialPageFactory` | 1.32 |
+| `getResourceLoader()` | `ResourceLoader` | 1.33 |
+| `getSkinFactory()` | `SkinFactory` | 1.27 |
+| `getInterwikiLookup()` | `InterwikiLookup` | 1.28 |
+| `getWatchedItemStore()` | `WatchedItemStoreInterface` | 1.28 |
+| `getWatchlistManager()` | `WatchlistManager` | 1.36 |
+| `getCommentStore()` | `CommentStore` | 1.31 |
+| `getCommentFormatter()` | `CommentFormatter` | 1.38 |
+| `getGlobalIdGenerator()` | `GlobalIdGenerator` | 1.35 |
+| `getStatsFactory()` | `StatsFactory` | 1.41 |
+
+  </Accordion>
+</AccordionGroup>
+
+## Service reset in tests
+
+MediaWikiIntegrationTestCase resets the global container between test cases automatically. To override a specific service within a test, use `overrideConfigValue()` or `setService()`:
+
+```php
+use MediaWiki\MediaWikiServices;
+use MediaWikiIntegrationTestCase;
+
+class MyServiceTest extends MediaWikiIntegrationTestCase {
+
+    public function testWithMockedRevisionStore(): void {
+        $mockRevisionStore = $this->createMock( RevisionStore::class );
+        $mockRevisionStore->method( 'getRevisionById' )->willReturn( null );
+
+        // Replaces the service for the duration of this test
+        $this->setService( 'RevisionStore', $mockRevisionStore );
+
+        $revisionStore = MediaWikiServices::getInstance()->getRevisionStore();
+        $this->assertNull( $revisionStore->getRevisionById( 99999 ) );
+    }
+
+    public function testResetSingleService(): void {
+        // Low-level reset; use setService() above where possible
+        MediaWikiServices::getInstance()
+            ->resetServiceForTesting( 'LinkCache' );
+    }
+}
+```
+
+<Tip>
+`resetServiceForTesting()` is guarded by `MW_PHPUNIT_TEST` and will throw outside of tests. For most cases, prefer `setService()` provided by `MediaWikiIntegrationTestCase`.
+</Tip>
+
+## Resetting the global instance
+
+`resetGlobalInstance()` creates a fresh container, optionally re-importing service wiring from the previous instance. The `$mode` parameter controls how expensive resources are handled:
+
+```php
+// Discard expensive resources, reuse wiring (default)
+MediaWikiServices::resetGlobalInstance();
+
+// Allow expensive resources to be salvaged and reused
+MediaWikiServices::resetGlobalInstance( null, 'quick' );
+
+// Discard expensive resources and reload wiring files from disk
+MediaWikiServices::resetGlobalInstance( null, 'reload' );
+```
+
+<Warning>
+`resetGlobalInstance()` is only allowed during bootstrapping, installation, maintenance scripts, and PHPUnit tests. Calling it after `MW_SERVICE_BOOTSTRAP_COMPLETE` is defined in normal web requests will throw a `LogicException`.
+</Warning>

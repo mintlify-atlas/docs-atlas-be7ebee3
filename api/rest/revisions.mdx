@@ -1,0 +1,355 @@
+---
+title: "Revisions API"
+description: "REST API endpoints for reading and comparing wiki page revisions."
+---
+
+The Revisions API provides access to specific revisions by numeric ID, returning their wikitext source, rendered HTML, metadata, or a structured diff comparing two revisions. All endpoints are served under `/w/rest.php/v1/revision/`.
+
+<Note>
+Revision IDs are assigned at edit time and are unique across all pages on a wiki. To find revision IDs for a page, use the [page history endpoint](/api/rest/pages#get-v1-pagetitlehistory).
+</Note>
+
+## GET /v1/revision/\{id\}
+
+Returns the wikitext source and full metadata for a specific revision.
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/revision/1234567
+```
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The numeric revision ID.
+</ParamField>
+
+### Response
+
+<ResponseField name="id" type="integer" required>
+  The revision ID.
+</ResponseField>
+
+<ResponseField name="size" type="integer" required>
+  Size of the revision content in bytes.
+</ResponseField>
+
+<ResponseField name="minor" type="boolean" required>
+  Whether this revision was flagged as a minor edit.
+</ResponseField>
+
+<ResponseField name="timestamp" type="string" required>
+  ISO 8601 timestamp of when the revision was made.
+</ResponseField>
+
+<ResponseField name="content_model" type="string" required>
+  The content model of the revision (e.g., `wikitext`, `json`).
+</ResponseField>
+
+<ResponseField name="page" type="object" required>
+  The page this revision belongs to.
+  <Expandable title="properties">
+    <ResponseField name="id" type="integer">
+      Page ID.
+    </ResponseField>
+    <ResponseField name="key" type="string">
+      Page title in DB-key form (with underscores).
+    </ResponseField>
+    <ResponseField name="title" type="string">
+      Page title with spaces.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="license" type="object" required>
+  License for the content.
+  <Expandable title="properties">
+    <ResponseField name="url" type="string">
+      URL of the license.
+    </ResponseField>
+    <ResponseField name="title" type="string">
+      Human-readable license name.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="user" type="object" required>
+  The user who made this revision. Null if the user information has been suppressed.
+  <Expandable title="properties">
+    <ResponseField name="id" type="integer">
+      User ID. Null for anonymous (IP) editors.
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      Username or IP address.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="comment" type="string" required>
+  The edit summary. Null if the comment has been suppressed.
+</ResponseField>
+
+<ResponseField name="delta" type="integer" required>
+  Byte difference from the parent revision. Null if the parent revision size is unavailable.
+</ResponseField>
+
+<ResponseField name="source" type="string" required>
+  The raw wikitext source of this revision.
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/revision/1234567
+```
+
+```json response
+{
+  "id": 1234567,
+  "size": 123456,
+  "minor": false,
+  "timestamp": "2024-01-15T10:30:00Z",
+  "content_model": "wikitext",
+  "page": {
+    "id": 9228,
+    "key": "Earth",
+    "title": "Earth"
+  },
+  "license": {
+    "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "title": "Creative Commons Attribution-Share Alike 4.0"
+  },
+  "user": {
+    "id": 42,
+    "name": "ExampleUser"
+  },
+  "comment": "Updated the introduction",
+  "delta": 150,
+  "source": "{{DISPLAYTITLE:Earth}}\n'''''Earth''''' is the third planet..."
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/revision/\{id\}/bare
+
+Returns revision metadata without the wikitext source, plus a URL pointing to the HTML representation. Suitable for clients that need revision metadata but will fetch HTML separately.
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/revision/1234567/bare
+```
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The numeric revision ID.
+</ParamField>
+
+### Response
+
+Same fields as `GET /v1/revision/{id}` (without `source`), plus:
+
+<ResponseField name="html_url" type="string">
+  The URL from which the Parsoid HTML for this revision can be fetched.
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/revision/1234567/bare
+```
+
+```json response
+{
+  "id": 1234567,
+  "size": 123456,
+  "minor": false,
+  "timestamp": "2024-01-15T10:30:00Z",
+  "content_model": "wikitext",
+  "page": { "id": 9228, "key": "Earth", "title": "Earth" },
+  "license": {
+    "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "title": "Creative Commons Attribution-Share Alike 4.0"
+  },
+  "user": { "id": 42, "name": "ExampleUser" },
+  "comment": "Updated the introduction",
+  "delta": 150,
+  "html_url": "https://en.wikipedia.org/w/rest.php/v1/revision/1234567/html"
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/revision/\{id\}/html
+
+Returns the Parsoid HTML for a specific revision. The response body is `text/html`.
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/revision/1234567/html
+```
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The numeric revision ID.
+</ParamField>
+
+<Note>
+The response content type is `text/html`, not `application/json`. The HTML follows the Parsoid HTML specification.
+</Note>
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/revision/1234567/html
+```
+
+```bash save to file
+curl https://en.wikipedia.org/w/rest.php/v1/revision/1234567/html \
+  -o revision.html
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/revision/\{id\}/with\_html
+
+Returns revision metadata combined with the Parsoid HTML in a single JSON response.
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/revision/1234567/with_html
+```
+
+### Path parameters
+
+<ParamField path="id" type="integer" required>
+  The numeric revision ID.
+</ParamField>
+
+### Response
+
+Same fields as `GET /v1/revision/{id}/bare`, plus:
+
+<ResponseField name="html" type="string">
+  The full Parsoid HTML of the revision as a string.
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/revision/1234567/with_html
+```
+
+```json response
+{
+  "id": 1234567,
+  "size": 123456,
+  "minor": false,
+  "timestamp": "2024-01-15T10:30:00Z",
+  "content_model": "wikitext",
+  "page": { "id": 9228, "key": "Earth", "title": "Earth" },
+  "license": {
+    "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "title": "Creative Commons Attribution-Share Alike 4.0"
+  },
+  "user": { "id": 42, "name": "ExampleUser" },
+  "comment": "Updated the introduction",
+  "delta": 150,
+  "html": "<!DOCTYPE html><html>...</html>"
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/revision/\{from\}/compare/\{to\}
+
+Compares two revisions and returns a structured JSON diff. Both revisions must belong to the same page. The diff uses the `wikidiff2` JSON inline diff format.
+
+<Warning>
+This endpoint requires the `wikidiff2` PHP extension to be installed on the server. If the extension is not present, the API returns `HTTP 500`.
+</Warning>
+
+```bash
+curl https://en.wikipedia.org/w/rest.php/v1/revision/1234566/compare/1234567
+```
+
+### Path parameters
+
+<ParamField path="from" type="integer" required>
+  The revision ID of the base (older) revision.
+</ParamField>
+
+<ParamField path="to" type="integer" required>
+  The revision ID of the target (newer) revision.
+</ParamField>
+
+### Response
+
+<ResponseField name="from" type="object" required>
+  Information about the base revision.
+  <Expandable title="properties">
+    <ResponseField name="id" type="integer">
+      Revision ID of the base revision.
+    </ResponseField>
+    <ResponseField name="slot_role" type="string">
+      The slot being compared. Always `main` for this endpoint.
+    </ResponseField>
+    <ResponseField name="sections" type="array">
+      Section metadata for the base revision. Each item has `level` (integer), `heading` (string), and `offset` (integer, byte offset in the wikitext). Section zero (content before the first heading) is excluded.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="to" type="object" required>
+  Information about the target revision. Same structure as `from`.
+</ResponseField>
+
+<ResponseField name="diff" type="array" required>
+  An array of diff operation objects in the `wikidiff2` JSON inline diff format. Each object describes a block of changed, added, or removed content.
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl https://en.wikipedia.org/w/rest.php/v1/revision/1234566/compare/1234567
+```
+
+```json response
+{
+  "from": {
+    "id": 1234566,
+    "slot_role": "main",
+    "sections": [
+      { "level": 2, "heading": "History", "offset": 1042 },
+      { "level": 2, "heading": "Geography", "offset": 3201 }
+    ]
+  },
+  "to": {
+    "id": 1234567,
+    "slot_role": "main",
+    "sections": [
+      { "level": 2, "heading": "History", "offset": 1042 },
+      { "level": 2, "heading": "Geography", "offset": 3351 }
+    ]
+  },
+  "diff": [
+    {
+      "type": 0,
+      "lineRange": { "from": [1, 10], "to": [1, 10] },
+      "lines": []
+    }
+  ]
+}
+```
+
+</CodeGroup>
+
+<Tip>
+To compare the latest revision of a page with any earlier revision, first retrieve the current revision ID from `GET /v1/page/{title}/bare`, then use it as the `to` parameter.
+</Tip>

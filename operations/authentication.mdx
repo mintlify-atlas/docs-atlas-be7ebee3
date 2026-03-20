@@ -1,0 +1,279 @@
+---
+title: "Authentication Configuration"
+description: "Configuring AuthManager, password policies, bot passwords, and SSO integration."
+---
+
+MediaWiki's authentication system is built around **AuthManager**, a pluggable framework introduced in MediaWiki 1.27. Authentication is handled by a pipeline of **providers** that can be combined to support anything from username/password login to OAuth and LDAP.
+
+---
+
+## AuthManager Architecture
+
+The `AuthManager` class (`includes/Auth/AuthManager.php`) is the single entry point for all authentication operations:
+
+- **Login** — `beginAuthentication()` / `continueAuthentication()`
+- **Account creation** — `beginAccountCreation()` / `continueAccountCreation()`
+- **Account linking** — `beginAccountLink()` / `continueAccountLink()`
+- **Authentication data change** — `allowsAuthenticationDataChange()` / `changeAuthenticationData()`
+
+### Provider Types
+
+<CardGroup cols={2}>
+  <Card title="PreAuthenticationProvider" icon="shield-check">
+    Runs before primary authentication. Used for throttling, CAPTCHA, block checks. Example: `ThrottlePreAuthenticationProvider`, `CheckBlocksSecondaryAuthenticationProvider`.
+  </Card>
+  <Card title="PrimaryAuthenticationProvider" icon="key">
+    Actually authenticates the user — verifies the credential and maps it to a MediaWiki account. Examples: `LocalPasswordPrimaryAuthenticationProvider`, `TemporaryPasswordPrimaryAuthenticationProvider`.
+  </Card>
+  <Card title="SecondaryAuthenticationProvider" icon="shield">
+    Runs after primary authentication succeeds. Used for 2FA, email verification, password change enforcement. Example: `ResetPasswordSecondaryAuthenticationProvider`.
+  </Card>
+</CardGroup>
+
+### Configuring Providers
+
+Providers are configured via `$wgAuthManagerConfig` in `LocalSettings.php`:
+
+```php
+// LocalSettings.php
+
+// Default configuration (usually auto-wired; only modify if you need to change the pipeline)
+$wgAuthManagerConfig = [
+    'preauth' => [
+        [
+            'class' => MediaWiki\Auth\ThrottlePreAuthenticationProvider::class,
+        ],
+    ],
+    'primaryauth' => [
+        [
+            'class'  => MediaWiki\Auth\LocalPasswordPrimaryAuthenticationProvider::class,
+            'config' => [ 'loginOnly' => false ],
+            'sort'   => 0,
+        ],
+    ],
+    'secondaryauth' => [
+        [
+            'class' => MediaWiki\Auth\CheckBlocksSecondaryAuthenticationProvider::class,
+        ],
+        [
+            'class' => MediaWiki\Auth\ResetPasswordSecondaryAuthenticationProvider::class,
+        ],
+        [
+            'class' => MediaWiki\Auth\EmailNotificationSecondaryAuthenticationProvider::class,
+        ],
+    ],
+];
+```
+
+---
+
+## Password Policies
+
+Password policies are configured via `$wgPasswordPolicy`. Policies can be set globally or per-group.
+
+```php
+// LocalSettings.php
+$wgPasswordPolicy = [
+    'policies' => [
+        // Policy for all users
+        'default' => [
+            'MinimalPasswordLength'         => 8,
+            'MinimumPasswordLengthToLogin'  => 1,
+            'MaximalPasswordLength'         => 4096,   // DoS protection for expensive hashing
+            'PasswordCannotMatchUsername'   => true,
+            'PasswordCannotBePopular'       => 25,     // Block the 25 most common passwords
+        ],
+        // Stricter policy for sysops
+        'sysop' => [
+            'MinimalPasswordLength'        => 12,
+            'PasswordCannotMatchUsername'  => true,
+            'PasswordCannotBePopular'      => 25,
+        ],
+        // Stricter policy for bureaucrats
+        'bureaucrat' => [
+            'MinimalPasswordLength'        => 14,
+        ],
+    ],
+    'checks' => [
+        'MinimalPasswordLength'         => 'PasswordPolicyChecks::checkMinimalPasswordLength',
+        'MinimumPasswordLengthToLogin'  => 'PasswordPolicyChecks::checkMinimumPasswordLengthToLogin',
+        'MaximalPasswordLength'         => 'PasswordPolicyChecks::checkMaximalPasswordLength',
+        'PasswordCannotMatchUsername'   => 'PasswordPolicyChecks::checkPasswordCannotMatchUsername',
+        'PasswordCannotBePopular'       => 'PasswordPolicyChecks::checkPopularPasswordBlacklist',
+    ],
+];
+```
+
+### Available Policy Checks
+
+| Check | Description |
+|-------|-------------|
+| `MinimalPasswordLength` | Minimum password length (non-fatal; blocks password *setting*) |
+| `MinimumPasswordLengthToLogin` | Minimum length to allow login (fatal; locks out short passwords) |
+| `MaximalPasswordLength` | Maximum password length (fatal; prevents DoS on bcrypt/PBKDF2) |
+| `PasswordCannotMatchUsername` | Password may not equal the username |
+| `PasswordCannotMatchBlacklist` | Password may not be in a custom blocklist |
+| `PasswordCannotBePopular` | Password may not be in the N most common passwords |
+
+### Password Hashing Algorithms
+
+MediaWiki supports multiple password hashing algorithms, configured via `$wgPasswordDefault`:
+
+```php
+// Available: 'pbkdf2', 'bcrypt', 'argon2' (requires PHP 7.2+)
+$wgPasswordDefault = 'pbkdf2';
+
+$wgPasswordConfig = [
+    'pbkdf2' => [
+        'class' => 'Pbkdf2PasswordUsingHashExtension',
+        'algo'  => 'sha256',
+        'cost'  => '10000',
+        'length' => '128',
+    ],
+];
+```
+
+---
+
+## Bot Passwords
+
+Bot passwords allow automated scripts and tools to authenticate without using the main account password. They support a granular **grant** system that limits what rights the bot session has.
+
+Users create bot passwords at **Special:BotPasswords**. Each bot password has:
+- A name (alphanumeric suffix)
+- A set of grants (read, edit, create accounts, etc.)
+- The actual password (shown once on creation)
+
+Bot passwords authenticate as `Username@BotPasswordName`:
+
+```bash
+# Using curl to authenticate via the API
+curl -c cookies.txt \
+  -d "action=login&lgname=MyBot@mybotpassword&lgpassword=xxxxx&format=json" \
+  https://wiki.example.com/api.php
+```
+
+### Configuration
+
+```php
+// LocalSettings.php
+
+// Enable bot passwords (enabled by default)
+$wgEnableBotPasswords = true;
+
+// Maximum number of bot passwords per user (since 1.46)
+$wgBotPasswordsLimit = 100;
+```
+
+---
+
+## Two-Factor Authentication (2FA)
+
+MediaWiki does not ship a 2FA provider in core, but the **[OATHAuth](https://www.mediawiki.org/wiki/Extension:OATHAuth)** extension provides TOTP-based 2FA as a `SecondaryAuthenticationProvider`.
+
+After installing OATHAuth:
+
+```php
+// LocalSettings.php
+wfLoadExtension( 'OATHAuth' );
+
+// Require 2FA for sysops
+$wgOATHAuthEnforced = [ 'sysop', 'bureaucrat' ];
+```
+
+Users configure their authenticator app at **Special:OATH**.
+
+---
+
+## OAuth Integration
+
+The **[OAuth](https://www.mediawiki.org/wiki/Extension:OAuth)** extension allows third-party applications to authenticate users and obtain scoped API access without sharing passwords.
+
+```php
+// LocalSettings.php
+wfLoadExtension( 'OAuth' );
+
+// Grant management interface at Special:OAuthConsumerRegistration
+// (for extension developers registering OAuth consumers)
+```
+
+MediaWiki acts as an **OAuth 1.0a** (and optionally OAuth 2.0) server. Consumers register at Special:OAuthConsumerRegistration and request specific grants. Users authorize access at Special:OAuthAuthorize.
+
+---
+
+## LDAP / SSO Integration
+
+MediaWiki does not include LDAP support in core. Use one of the following extensions:
+
+| Extension | Protocol | Notes |
+|-----------|----------|-------|
+| [LDAPAuthentication2](https://www.mediawiki.org/wiki/Extension:LDAPAuthentication2) | LDAP/AD | Uses the AuthManager plugin system; recommended for new deployments |
+| [LDAPProvider](https://www.mediawiki.org/wiki/Extension:LDAPProvider) | LDAP/AD | Shared LDAP infrastructure used by LDAPAuthentication2 and related extensions |
+| [SimpleSAMLphp](https://www.mediawiki.org/wiki/Extension:SimpleSAMLphp) | SAML 2.0 | For enterprise SSO via SAML; delegates authentication to a SAML IdP |
+| [PluggableAuth](https://www.mediawiki.org/wiki/Extension:PluggableAuth) | Various | Generic authentication plugin framework |
+
+### Example LDAP Configuration
+
+```php
+// LocalSettings.php
+wfLoadExtension( 'LDAPProvider' );
+wfLoadExtension( 'LDAPAuthentication2' );
+
+$LDAPProviderDomainConfigs = __DIR__ . '/ldapprovider.json';
+$wgLDAPAuthentication2AllowLocalLogin = false;
+```
+
+```json
+// ldapprovider.json
+{
+    "EXAMPLE": {
+        "server": "ldap.example.com",
+        "port": 389,
+        "basedn": "dc=example,dc=com",
+        "userbasedn": "ou=users,dc=example,dc=com",
+        "searchattribute": "uid",
+        "usernameattribute": "uid",
+        "realnameattribute": "cn",
+        "emailattribute": "mail"
+    }
+}
+```
+
+---
+
+## Temporary Accounts
+
+Temporary accounts (introduced in MediaWiki 1.39) provide IP privacy for anonymous edits. Instead of logging the IP address as the editor, MediaWiki creates a temporary account with a system-generated name.
+
+```php
+// LocalSettings.php
+
+// Enable temporary accounts
+$wgAutoCreateTempUser = [
+    'enabled'  => true,
+    'genPattern' => '~2024-$1',  // Generated username pattern
+    'serialProvider' => [ 'type' => 'centralId' ],
+    'serialMapping'  => [ 'type' => 'ugm-serial' ],
+];
+```
+
+Expire temporary accounts after a period of inactivity:
+
+```bash
+# Expire temporary accounts inactive for 90 days
+php maintenance/run.php expireTemporaryAccounts --days 90
+```
+
+---
+
+## Creating Bot Passwords via CLI
+
+For automated setup, bot passwords can be created from the command line:
+
+```bash
+# Create a bot password for user 'WikiBot' named 'api-access'
+php maintenance/run.php createBotPassword \
+  --user WikiBot \
+  --appid api-access \
+  --grants basic,editpage,createeditmovepage
+```

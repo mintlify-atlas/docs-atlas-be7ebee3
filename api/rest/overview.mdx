@@ -1,0 +1,175 @@
+---
+title: "REST API Overview"
+description: "MediaWiki's modern REST API: authentication, endpoints, and response formats."
+---
+
+The MediaWiki REST API is a modern HTTP API for reading and writing wiki content. It is distinct from the older [Action API](/api/action/overview) and uses standard HTTP methods, JSON responses, and predictable URL patterns.
+
+All REST API endpoints are served from the base path `/w/rest.php` on your wiki host. The current stable version of the API uses the `/v1/` path prefix.
+
+<Note>
+The REST API is available on all MediaWiki installations running version 1.35 or later. Some endpoints require extensions (such as Parsoid for HTML rendering) to be configured.
+</Note>
+
+## Base URL
+
+All endpoints are relative to:
+
+```
+https://{{wiki-host}}/w/rest.php/v1/
+```
+
+For example, on Wikipedia in English:
+
+```
+https://en.wikipedia.org/w/rest.php/v1/
+```
+
+## Authentication
+
+The REST API supports two authentication methods.
+
+### Cookies (session-based)
+
+Requests made from a browser with an active MediaWiki session will be authenticated automatically using the session cookie. This is the default for browser-based clients.
+
+<Warning>
+Cookie-based authentication requires a valid CSRF token for write operations (`PUT`, `POST`). Include the token in the `token` field of the request body. Retrieve the token via the Action API's `action=query&meta=tokens` endpoint before making write requests.
+</Warning>
+
+### OAuth
+
+For server-side or third-party clients, MediaWiki supports OAuth 1.0a and OAuth 2.0 via the OAuth extension. OAuth requests are authenticated using a signed `Authorization` header and do not require CSRF tokens.
+
+```bash
+curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  https://en.wikipedia.org/w/rest.php/v1/page/Earth
+```
+
+## Response format
+
+All responses are JSON (`Content-Type: application/json`) unless the endpoint explicitly returns another type (for example, `GET /v1/page/{title}/html` returns `text/html`).
+
+Successful responses use standard HTTP `2xx` status codes. Response bodies are objects or arrays as documented for each endpoint.
+
+```json
+{
+  "id": 9228,
+  "key": "Earth",
+  "title": "Earth",
+  "latest": {
+    "id": 1234567,
+    "timestamp": "2024-01-15T10:30:00Z"
+  },
+  "content_model": "wikitext",
+  "license": {
+    "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "title": "Creative Commons Attribution-Share Alike 4.0"
+  },
+  "source": "{{DISPLAYTITLE:Earth}}\n'''''Earth''''' is the third planet..."
+}
+```
+
+## Error handling
+
+Errors are returned as JSON objects with a `messageTranslations` field containing localized error messages, a `httpCode` integer, and a `httpReason` string.
+
+```json
+{
+  "messageTranslations": {
+    "en": "The title you specified does not exist."
+  },
+  "httpCode": 404,
+  "httpReason": "Not Found"
+}
+```
+
+### HTTP status codes
+
+| Code | Meaning |
+|------|---------|
+| `200` | Request succeeded |
+| `201` | Resource created |
+| `301` / `308` | Redirect — follow the `Location` header |
+| `400` | Bad request — invalid parameters |
+| `403` | Forbidden — insufficient permissions |
+| `404` | Not found — page or revision does not exist |
+| `409` | Conflict — edit conflict or page already exists |
+| `415` | Unsupported media type |
+| `429` | Too many requests — rate limit exceeded |
+| `500` | Internal server error |
+
+## Rate limiting
+
+The REST API enforces per-user rate limits consistent with the wiki's configured throttle settings. When a limit is exceeded, the API returns `HTTP 429 Too Many Requests`. Clients should implement exponential backoff when they receive 429 responses.
+
+## CORS support
+
+Cross-origin requests are supported for public wikis. The REST API sets appropriate `Access-Control-Allow-Origin` headers based on the wiki's `$wgCrossSiteAJAXdomains` configuration. Requests that include credentials (cookies) require the `Origin` header to exactly match an allowed domain.
+
+## Caching
+
+Read endpoints set `Cache-Control` headers. Clients and CDNs should respect these headers. ETags and `Last-Modified` headers are included on most read responses and can be used for conditional requests with `If-None-Match` and `If-Modified-Since`.
+
+## Endpoints
+
+All routes listed below are served under `/w/rest.php/v1/`. Routes are defined in `includes/Rest/coreRoutes.json`.
+
+### Pages
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/page/{title}` | Get latest revision wikitext source and metadata |
+| `GET` | `/v1/page/{title}/bare` | Get page metadata with a link to the HTML representation |
+| `GET` | `/v1/page/{title}/html` | Get the latest Parsoid HTML for a page |
+| `GET` | `/v1/page/{title}/with_html` | Get page metadata combined with Parsoid HTML |
+| `GET` | `/v1/page/{title}/history` | List revisions of a page |
+| `GET` | `/v1/page/{title}/history/counts/{type}` | Count revisions of a specific type |
+| `GET` | `/v1/page/{title}/links/language` | List interlanguage links |
+| `GET` | `/v1/page/{title}/links/media` | List media files used on the page |
+| `GET` | `/v1/page/{title}/lint` | Get lint errors for the page |
+| `PUT` | `/v1/page/{title}` | Create or update a page |
+| `POST` | `/v1/page` | Create a new page |
+
+### Revisions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/revision/{id}` | Get revision wikitext source and metadata |
+| `GET` | `/v1/revision/{id}/bare` | Get revision metadata with a link to the HTML representation |
+| `GET` | `/v1/revision/{id}/html` | Get Parsoid HTML for a specific revision |
+| `GET` | `/v1/revision/{id}/with_html` | Get revision metadata combined with Parsoid HTML |
+| `GET` | `/v1/revision/{id}/lint` | Get lint errors for a specific revision |
+| `GET` | `/v1/revision/{from}/compare/{to}` | Compare two revisions and return a diff |
+
+### Search
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/search/page` | Full-text search across page bodies and titles |
+| `GET` | `/v1/search/title` | Title prefix completion search |
+| `GET` | `/v1/search` | OpenSearch description document |
+
+### Files
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/file/{title}` | Get metadata for a file (image, video, audio) |
+
+### Transforms
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/transform/wikitext/to/html` | Convert wikitext to Parsoid HTML |
+| `POST` | `/v1/transform/wikitext/to/html/{title}` | Convert wikitext to HTML in the context of a page |
+| `POST` | `/v1/transform/wikitext/to/html/{title}/{revision}` | Convert wikitext to HTML in the context of a specific revision |
+| `POST` | `/v1/transform/html/to/wikitext` | Convert Parsoid HTML to wikitext |
+| `POST` | `/v1/transform/html/to/wikitext/{title}` | Convert HTML to wikitext in page context |
+| `POST` | `/v1/transform/html/to/wikitext/{title}/{revision}` | Convert HTML to wikitext in revision context |
+| `POST` | `/v1/transform/wikitext/to/lint` | Check wikitext for lint errors |
+| `POST` | `/v1/transform/wikitext/to/lint/{title}` | Check wikitext for lint errors in page context |
+| `POST` | `/v1/transform/wikitext/to/lint/{title}/{revision}` | Check wikitext for lint errors in revision context |
+
+<Tip>
+For reading public wiki content, most endpoints do not require authentication. Authentication is required for write operations and for accessing restricted content.
+</Tip>

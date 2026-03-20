@@ -1,0 +1,328 @@
+---
+title: "Extension Services"
+description: "Adding services to MediaWiki extensions using dependency injection."
+---
+
+MediaWiki uses a service container (`MediaWikiServices`) to manage shared, stateless services. Extensions can add their own services to this container by providing a service wiring file. This enables clean dependency injection throughout extension code, consistent with how MediaWiki core manages its own services.
+
+## Registering a service wiring file
+
+Declare your wiring file in `extension.json` using the `ServiceWiringFiles` field:
+
+```json extension.json
+{
+    "manifest_version": 2,
+    "name": "FoodProcessor",
+    "ServiceWiringFiles": [
+        "src/ServiceWiring.php"
+    ]
+}
+```
+
+`ServiceWiringFiles` is an array, so you can split wiring across multiple files for large extensions. All listed files are loaded by the default `MediaWikiServices` instance during bootstrap.
+
+## ServiceWiring.php structure
+
+A service wiring file must **return an array** of service factory callables. Each key is the service name and each value is a `static function` that receives the `MediaWikiServices` container and returns the service object.
+
+This mirrors exactly the pattern used by MediaWiki core in `includes/ServiceWiring.php`:
+
+```php
+return [
+    'ActionFactory' => static function ( MediaWikiServices $services ): ActionFactory {
+        return new ActionFactory(
+            $services->getMainConfig()->get( MainConfigNames::Actions ),
+            LoggerFactory::getInstance( 'ActionFactory' ),
+            $services->getObjectFactory(),
+            $services->getHookContainer(),
+        );
+    },
+];
+```
+
+### A complete extension example
+
+```php src/ServiceWiring.php
+<?php
+
+use MediaWiki\Extension\FoodProcessor\FoodProcessorService;
+use MediaWiki\Extension\FoodProcessor\HookRunner;
+use MediaWiki\MediaWikiServices;
+
+return [
+    'FoodProcessor.ProcessorService' => static function (
+        MediaWikiServices $services
+    ): FoodProcessorService {
+        return new FoodProcessorService(
+            $services->getMainConfig(),
+            $services->getDBLoadBalancer(),
+            $services->getHookContainer()
+        );
+    },
+
+    'FoodProcessor.HookRunner' => static function (
+        MediaWikiServices $services
+    ): HookRunner {
+        return new HookRunner(
+            $services->getHookContainer()
+        );
+    },
+];
+```
+
+<Note>
+  Service wiring is NOT a cache for arbitrary singletons. Services must not vary their behaviour based on global state, the current WebRequest, RequestContext, or per-request details such as the current user or title. Doing so can cause serious data corruption.
+</Note>
+
+## Naming conventions
+
+Name extension services with a prefix to avoid collisions with core services and other extensions:
+
+```
+FoodProcessor.ProcessorService
+FoodProcessor.HookRunner
+FoodProcessor.RecipeStore
+```
+
+This convention — `ExtensionName.ServiceName` — is the established pattern across MediaWiki extensions.
+
+## The $services parameter
+
+The `MediaWikiServices $services` parameter passed to each factory gives access to every registered service in the container. Use it to retrieve core services your extension's class needs:
+
+```php
+static function ( MediaWikiServices $services ): MyExtensionService {
+    return new MyExtensionService(
+        // Core services
+        $services->getMainConfig(),
+        $services->getDBLoadBalancer(),
+        $services->getConnectionProvider(),
+        $services->getHookContainer(),
+        $services->getObjectFactory(),
+        $services->getUserFactory(),
+        $services->getTitleFactory(),
+        $services->getRevisionStore(),
+        $services->getPermissionManager(),
+
+        // Another extension service (registered earlier)
+        $services->getService( 'FoodProcessor.RecipeStore' )
+    );
+}
+```
+
+<Tip>
+  Access extension services via `$services->getService( 'ExtensionName.ServiceName' )`. Core services have dedicated typed accessors like `getMainConfig()`, `getDBLoadBalancer()`, and `getHookContainer()`.
+</Tip>
+
+## Implementing a service class
+
+Extension services are plain PHP classes whose constructor accepts all dependencies explicitly. This makes them easy to unit test and avoids reliance on global state.
+
+```php src/FoodProcessorService.php
+<?php
+
+namespace MediaWiki\Extension\FoodProcessor;
+
+use MediaWiki\Config\Config;
+use MediaWiki\Extension\FoodProcessor\HookRunner;
+use Wikimedia\Rdbms\ILoadBalancer;
+
+class FoodProcessorService {
+
+    private Config $config;
+    private ILoadBalancer $loadBalancer;
+    private HookRunner $hookRunner;
+
+    public function __construct(
+        Config $config,
+        ILoadBalancer $loadBalancer,
+        HookRunner $hookRunner
+    ) {
+        $this->config = $config;
+        $this->loadBalancer = $loadBalancer;
+        $this->hookRunner = $hookRunner;
+    }
+
+    public function processItem( string $item ): bool {
+        $maxItems = $this->config->get( 'FoodProcessorMaxItems' );
+
+        // Allow hooks to abort processing
+        if ( !$this->hookRunner->onBeforeProcessItem( $item ) ) {
+            return false;
+        }
+
+        $db = $this->loadBalancer->getConnection( DB_PRIMARY );
+        $db->insert( 'foodprocessor_items', [ 'fp_item' => $item ] );
+
+        return true;
+    }
+}
+```
+
+## Injecting services into hook handlers
+
+The `services` key in a `HookHandlers` entry injects services directly into the handler's constructor. List service names by their registered names:
+
+```json extension.json
+"HookHandlers": {
+    "main": {
+        "class": "MediaWiki\\Extension\\FoodProcessor\\HookHandler",
+        "services": [
+            "FoodProcessor.ProcessorService",
+            "ReadOnlyMode"
+        ]
+    }
+}
+```
+
+The handler constructor receives services in the same order:
+
+```php src/HookHandler.php
+<?php
+
+namespace MediaWiki\Extension\FoodProcessor;
+
+use MediaWiki\Hook\BeforePageDisplayHook;
+use MediaWiki\Output\OutputPage;
+use Wikimedia\Rdbms\ReadOnlyMode;
+use Skin;
+
+class HookHandler implements BeforePageDisplayHook {
+
+    private FoodProcessorService $processorService;
+    private ReadOnlyMode $readOnlyMode;
+
+    public function __construct(
+        FoodProcessorService $processorService,
+        ReadOnlyMode $readOnlyMode
+    ) {
+        $this->processorService = $processorService;
+        $this->readOnlyMode = $readOnlyMode;
+    }
+
+    public function onBeforePageDisplay( $out, $skin ): void {
+        if ( !$this->readOnlyMode->isReadOnly() ) {
+            // Use the injected service
+        }
+    }
+}
+```
+
+## Injecting services into special pages
+
+Special pages declared in `SpecialPages` also support ObjectFactory service injection:
+
+```json extension.json
+"SpecialPages": {
+    "FoodProcessor": {
+        "class": "MediaWiki\\Extension\\FoodProcessor\\SpecialFoodProcessor",
+        "services": [
+            "FoodProcessor.ProcessorService"
+        ]
+    }
+}
+```
+
+```php src/SpecialFoodProcessor.php
+<?php
+
+namespace MediaWiki\Extension\FoodProcessor;
+
+use MediaWiki\SpecialPage\SpecialPage;
+
+class SpecialFoodProcessor extends SpecialPage {
+
+    private FoodProcessorService $processorService;
+
+    public function __construct( FoodProcessorService $processorService ) {
+        parent::__construct( 'FoodProcessor' );
+        $this->processorService = $processorService;
+    }
+
+    public function execute( $subPage ): void {
+        $this->setHeaders();
+        // Use $this->processorService
+    }
+}
+```
+
+## Lazy initialization and performance
+
+Service objects are instantiated lazily: the factory callable is only executed the first time the service is requested from the container. Subsequent calls return the cached singleton. This means the cost of constructing services is deferred until they are needed.
+
+<Tip>
+  Because services are singletons per request, any state stored on a service object persists for the lifetime of the request. Keep services stateless where possible, or clearly document any internal state.
+</Tip>
+
+### Avoiding expensive work in constructors
+
+Factory callables run when the service is first requested. Heavy initialization (database queries, file I/O) inside the constructor delays that first request. Prefer lazy initialization patterns:
+
+```php
+class FoodProcessorService {
+
+    private ILoadBalancer $loadBalancer;
+    // Initialized on first use, not in constructor
+    private ?array $cachedRecipes = null;
+
+    public function __construct( ILoadBalancer $loadBalancer ) {
+        $this->loadBalancer = $loadBalancer;
+    }
+
+    private function getRecipes(): array {
+        if ( $this->cachedRecipes === null ) {
+            $db = $this->loadBalancer->getConnection( DB_REPLICA );
+            $this->cachedRecipes = $db->selectFieldValues(
+                'foodprocessor_recipes',
+                'fp_name',
+                [],
+                __METHOD__
+            );
+        }
+        return $this->cachedRecipes;
+    }
+}
+```
+
+## Testing services
+
+Because services accept all dependencies via constructor injection, unit tests can pass mock objects directly without needing a service container:
+
+```php tests/phpunit/FoodProcessorServiceTest.php
+<?php
+
+namespace MediaWiki\Extension\FoodProcessor\Tests;
+
+use MediaWiki\Config\HashConfig;
+use MediaWiki\Extension\FoodProcessor\FoodProcessorService;
+use MediaWiki\Extension\FoodProcessor\HookRunner;
+use MediaWiki\Tests\Unit\MockServiceDependenciesTrait;
+use MediaWikiUnitTestCase;
+use Wikimedia\Rdbms\ILoadBalancer;
+
+class FoodProcessorServiceTest extends MediaWikiUnitTestCase {
+
+    public function testProcessItemAbortsOnReadOnly(): void {
+        $config = new HashConfig( [ 'FoodProcessorMaxItems' => 50 ] );
+        $loadBalancer = $this->createMock( ILoadBalancer::class );
+        $hookRunner = $this->createMock( HookRunner::class );
+
+        // Hook returns false — processing should abort
+        $hookRunner->method( 'onBeforeProcessItem' )->willReturn( false );
+
+        $service = new FoodProcessorService( $config, $loadBalancer, $hookRunner );
+
+        $result = $service->processItem( 'banana' );
+        $this->assertFalse( $result );
+    }
+}
+```
+
+For integration tests that need the full service container, use `MediaWikiIntegrationTestCase` and override services with `setService()`:
+
+```php
+$this->setService(
+    'FoodProcessor.ProcessorService',
+    $this->createMock( FoodProcessorService::class )
+);
+```

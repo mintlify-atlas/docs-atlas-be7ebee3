@@ -1,0 +1,376 @@
+---
+title: "Skin Development"
+description: "Building custom MediaWiki skins: skin.json, SkinTemplate, and resource modules."
+---
+
+Building a custom MediaWiki skin requires a `skin.json` manifest, a PHP class that extends one of the skin base classes, and ResourceLoader module declarations for your CSS and JavaScript.
+
+## skin.json structure
+
+Every skin must have a `skin.json` file in its root directory. This file is read by `ExtensionRegistry` when `wfLoadSkin()` is called.
+
+```json skins/MyTheme/skin.json
+{
+    "name": "MyTheme",
+    "version": "1.0.0",
+    "namemsg": "skinname-mytheme",
+    "descriptionmsg": "mytheme-desc",
+    "author": "Your Name",
+    "url": "https://www.mediawiki.org/wiki/Skin:MyTheme",
+    "license-name": "GPL-2.0-or-later",
+    "type": "skin",
+    "requires": {
+        "MediaWiki": ">= 1.39.0"
+    },
+    "ValidSkinNames": {
+        "mytheme": {
+            "class": "MediaWiki\\Skins\\MyTheme\\SkinMyTheme",
+            "args": [
+                {
+                    "name": "mytheme",
+                    "templateDirectory": "skins/MyTheme/templates",
+                    "responsive": true,
+                    "messages": [ "mytheme-footer-desc" ],
+                    "styles": [ "skins.mytheme.styles" ],
+                    "scripts": [ "skins.mytheme.scripts" ],
+                    "menus": [
+                        "associated-pages",
+                        "views",
+                        "actions",
+                        "variants",
+                        "user-menu",
+                        "user-page",
+                        "notifications",
+                        "user-interface-preferences"
+                    ]
+                }
+            ]
+        }
+    },
+    "ResourceModules": {
+        "skins.mytheme.styles": {
+            "class": "MediaWiki\\ResourceLoader\\SkinModule",
+            "features": {
+                "normalize": true,
+                "elements": true,
+                "content-media": true,
+                "content-links": true,
+                "content-body": true,
+                "interface": true
+            },
+            "styles": [
+                "resources/skins.mytheme.styles/skin.less"
+            ]
+        },
+        "skins.mytheme.scripts": {
+            "scripts": [
+                "resources/skins.mytheme.scripts/skin.js"
+            ],
+            "dependencies": [
+                "mediawiki.page.ready"
+            ]
+        }
+    },
+    "MessagesDirs": {
+        "MyTheme": [ "i18n" ]
+    },
+    "AutoloadNamespaces": {
+        "MediaWiki\\Skins\\MyTheme\\": "includes/"
+    }
+}
+```
+
+<Note>
+The internal skin name (the key in `ValidSkinNames`, `"mytheme"` above) must be lowercase. It is used for CSS class names, message keys (`skinname-mytheme`), and per-skin customisation pages (`MediaWiki:Mytheme.css`).
+</Note>
+
+### Key skin.json fields
+
+| Field | Description |
+|---|---|
+| `name` | Display name of the skin |
+| `namemsg` | i18n message key for the skin name (used in Special:Preferences) |
+| `descriptionmsg` | i18n message key for the skin description |
+| `ValidSkinNames` | Maps skin key to class and constructor args |
+| `ResourceModules` | ResourceLoader module definitions |
+| `MessagesDirs` | i18n directory paths |
+| `AutoloadNamespaces` | PSR-4 namespace to directory mapping |
+
+## SkinTemplate vs. Skin base class
+
+MediaWiki provides two main base classes for skin development:
+
+<CardGroup cols={2}>
+  <Card title="Skin" icon="code">
+    The abstract base. Provides `getTemplateData()`, `buildSidebar()`, `buildNavUrls()`, `initPage()`, and navigation building. All skins ultimately extend this class. You must implement `outputPage()`.
+  </Card>
+  <Card title="SkinTemplate" icon="layers">
+    Extends `Skin`. Adds QuickTemplate and portlet data assembly via `prepareQuickTemplate()`. Most legacy skins subclass this directly. Defines `generateHTML()` and `outputPage()`.
+  </Card>
+</CardGroup>
+
+For new skins, the recommended base is `SkinMustache`, which extends `SkinTemplate` and adds Mustache template rendering:
+
+```
+Skin (abstract)
+└── SkinTemplate
+    └── SkinMustache       ← recommended for new skins
+        ├── SkinFallback   (built-in recovery skin)
+        ├── SkinApi        (built-in API output skin)
+        └── YourSkin
+```
+
+## Implementing skin methods
+
+### initPage()
+
+`initPage( OutputPage $out )` is called before the HTML body is generated. Use it to set meta tags, add modules, or configure page-level output. The parent implementation handles responsive viewport tags and Open Graph meta tags.
+
+```php includes/MySkin/SkinMyTheme.php
+<?php
+
+namespace MediaWiki\Skins\MyTheme;
+
+use MediaWiki\Output\OutputPage;
+use MediaWiki\Skin\SkinMustache;
+
+class SkinMyTheme extends SkinMustache {
+
+    /** @inheritDoc */
+    public function initPage( OutputPage $out ) {
+        parent::initPage( $out );
+
+        // Add a custom module only on article pages
+        if ( $out->isArticle() ) {
+            $out->addModules( [ 'skins.mytheme.article' ] );
+        }
+    }
+}
+```
+
+The parent `initPage()` sets the viewport meta tag based on the `responsive` option:
+
+```php includes/Skin/Skin.php
+public function initPage( OutputPage $out ) {
+    $this->preloadExistence();
+
+    if ( $this->isResponsive() ) {
+        $out->addMeta(
+            'viewport',
+            'width=device-width, initial-scale=1.0, ' .
+            'user-scalable=yes, minimum-scale=0.25, maximum-scale=5.0'
+        );
+    } else {
+        // Force desktop viewport width (1120px) on non-responsive skins
+        $out->addMeta( 'viewport', 'width=1120' );
+    }
+}
+```
+
+### generateHTML()
+
+`SkinTemplate::generateHTML()` executes the template and returns the HTML body. When using `SkinMustache`, this is overridden to call `TemplateParser::processTemplate()`:
+
+```php includes/Skin/SkinMustache.php
+public function generateHTML() {
+    $this->setupTemplateContext();
+    $out = $this->getOutput();
+    $tp = $this->getTemplateParser();
+    $template = $this->options['template'] ?? 'skin';
+    $data = $this->getTemplateData();
+    return $tp->processTemplate( $template, $data );
+}
+```
+
+The `template` option in `skin.json` specifies which Mustache file is used (defaults to `skin`). `getTemplateData()` assembles the full data array passed to the template.
+
+### getTemplateData()
+
+Override `getTemplateData()` to add skin-specific variables to the template. Always call the parent and merge the results:
+
+```php
+public function getTemplateData() {
+    $data = parent::getTemplateData();
+
+    // Add a custom boolean flag
+    $data['is-sidebar-visible'] = $this->shouldShowSidebar();
+
+    // Add a skin-specific message
+    $data['html-custom-header'] = $this->msg( 'mytheme-header' )->parse();
+
+    return $data;
+}
+```
+
+### getDefaultModules()
+
+Override `getDefaultModules()` to modify which ResourceLoader modules are loaded. The return value is an array grouped by type:
+
+```php
+public function getDefaultModules() {
+    $modules = parent::getDefaultModules();
+
+    // Add a render-blocking style module
+    $modules['styles']['skin'][] = 'skins.mytheme.extra.styles';
+
+    // Add a JavaScript module
+    $modules['skin'][] = 'skins.mytheme.extra';
+
+    return $modules;
+}
+```
+
+The `styles` sub-key controls render-blocking CSS. Modules listed under `skin` are the skin's own scripts.
+
+## ResourceLoader modules
+
+ResourceLoader modules are declared in `skin.json` under `ResourceModules`. Skins typically use `SkinModule` for their main stylesheet, which provides opt-in feature styles from MediaWiki core.
+
+### SkinModule features
+
+`MediaWiki\ResourceLoader\SkinModule` provides a set of reusable feature styles. Declare which features your skin uses:
+
+```json
+"skins.mytheme.styles": {
+    "class": "MediaWiki\\ResourceLoader\\SkinModule",
+    "features": {
+        "normalize": true,
+        "elements": true,
+        "content-media": true,
+        "content-links": true,
+        "content-body": true,
+        "content-tables": true,
+        "interface": true,
+        "interface-category": true
+    },
+    "styles": [
+        "resources/skins.mytheme.styles/skin.less"
+    ]
+}
+```
+
+Available `SkinModule` feature keys include:
+
+| Feature | Description |
+|---|---|
+| `normalize` | Cross-browser rendering normalisation |
+| `elements` | Base-level single-element styles |
+| `content-media` | Thumbnail and floated-element styles |
+| `content-links` | Red links, stub links, external link styles |
+| `content-body` | Styles for `.mw-parser-output` |
+| `content-tables` | `.wikitable` styles |
+| `interface` | Common interface styles (MonoBook/Vector level) |
+| `interface-category` | Category bar styles |
+| `logo` | CSS for `.mw-wiki-logo` using `$wgLogos` |
+| `accessibility` | Universal accessibility rules |
+
+### Script modules
+
+```json
+"skins.mytheme.scripts": {
+    "scripts": [
+        "resources/skins.mytheme.scripts/skin.js"
+    ],
+    "messages": [ "mytheme-toggle-sidebar" ],
+    "dependencies": [
+        "mediawiki.page.ready",
+        "mediawiki.util"
+    ]
+}
+```
+
+## Making skins responsive
+
+To enable responsive behaviour, set `"responsive": true` in the skin's constructor args inside `skin.json`:
+
+```json
+"ValidSkinNames": {
+    "mytheme": {
+        "class": "MediaWiki\\Skins\\MyTheme\\SkinMyTheme",
+        "args": [{ "name": "mytheme", "responsive": true }]
+    }
+}
+```
+
+When `responsive` is `true`, the `isResponsive()` method checks both the skin option and the user's `skin-responsive` preference:
+
+```php includes/Skin/Skin.php
+public function isResponsive() {
+    $isSkinResponsiveCapable = $this->getOptions()['responsive'];
+    $userOptionsLookup = MediaWikiServices::getInstance()->getUserOptionsLookup();
+
+    return $isSkinResponsiveCapable &&
+        $userOptionsLookup->getBoolOption( $this->getUser(), 'skin-responsive' );
+}
+```
+
+When `isResponsive()` returns `true`, OutputPage adds the `skin--responsive` class to `<body>` and `initPage()` sets a full viewport meta tag instead of the fixed `width=1120` desktop fallback.
+
+In your CSS, use this class to apply responsive rules:
+
+```less
+.skin--responsive {
+    #content {
+        max-width: 100%;
+        margin: 0;
+    }
+}
+```
+
+## Skin options reference
+
+The following options can be passed in the constructor args array in `skin.json`:
+
+| Option | Default | Description |
+|---|---|---|
+| `name` | required | Internal skin name (lowercase) |
+| `styles` | `[]` | ResourceLoader style modules to load on all pages |
+| `scripts` | `[]` | ResourceLoader script modules to load on all pages |
+| `responsive` | `false` | Enable responsive viewport meta tag |
+| `toc` | `true` | Whether ToC is in main content area |
+| `bodyClasses` | `[]` | Extra CSS classes on `<body>` |
+| `clientPrefEnabled` | `false` | Enable `mw.user.clientPrefs` support (since 1.41) |
+| `wrapSiteNotice` | `false` | Wrap banners in `div#siteNotice` (since 1.42) |
+| `messages` | `[]` | i18n messages to include in template data as `msg-*` |
+| `menus` | `['namespaces','views','actions','variants']` | Navigation menus the skin supports |
+| `templateDirectory` | — | Path to Mustache template files (required for SkinMustache) |
+| `template` | `'skin'` | Name of the root Mustache template file |
+
+## Skin variants and color schemes
+
+Skins can support user-selectable variants (e.g., light/dark themes) using the `clientPrefEnabled` option together with `mw.user.clientPrefs`. Enable it in `skin.json`:
+
+```json
+"args": [{
+    "name": "mytheme",
+    "clientPrefEnabled": true
+}]
+```
+
+ClientPrefs are stored as HTML classes on `<html>` and persisted in `localStorage` for anonymous users (or user preferences for logged-in users). Your CSS uses these classes as hooks:
+
+```less
+// Default: light theme
+.skin-mytheme {
+    --bg-color: #ffffff;
+    --text-color: #202122;
+}
+
+// Dark theme variant applied via clientPref
+.skin-mytheme-clientpref-night {
+    --bg-color: #101418;
+    --text-color: #eaecf0;
+}
+```
+
+<Steps>
+  <Step title="Enable clientPrefEnabled">
+    Set `"clientPrefEnabled": true` in your skin's constructor args in `skin.json`.
+  </Step>
+  <Step title="Define CSS classes">
+    Write CSS rules scoped to `.skin-<name>-clientpref-<value>` class names on the `<html>` element.
+  </Step>
+  <Step title="Register the preference">
+    Use `mw.user.clientPrefs.set()` in JavaScript to allow users to toggle between variants.
+  </Step>
+</Steps>

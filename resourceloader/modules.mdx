@@ -1,0 +1,327 @@
+---
+title: "Module Definitions"
+description: "Defining ResourceLoader modules for JavaScript and CSS in your extension."
+---
+
+ResourceLoader modules are defined in `extension.json` under the `ResourceModules` key. Each module is a named object that declares its scripts, styles, dependencies, messages, and other properties. ResourceLoader reads these definitions and serves the module content via `load.php`.
+
+## A complete module definition
+
+```json
+{
+    "ResourceModules": {
+        "ext.myExtension.feature": {
+            "localBasePath": "",
+            "remoteExtPath": "MyExtension",
+            "scripts": [
+                "resources/ext.myExtension.feature.js"
+            ],
+            "styles": [
+                "resources/ext.myExtension.feature.less"
+            ],
+            "skinStyles": {
+                "monobook": [
+                    "resources/ext.myExtension.feature.monobook.less"
+                ]
+            },
+            "dependencies": [
+                "mediawiki.api",
+                "mediawiki.util",
+                "jquery"
+            ],
+            "messages": [
+                "myextension-save-success",
+                "myextension-save-error",
+                "myextension-loading"
+            ],
+            "templates": {
+                "item.html": "resources/templates/item.html"
+            },
+            "targets": [ "desktop", "mobile" ]
+        }
+    }
+}
+```
+
+## Module properties
+
+### scripts and styles
+
+`scripts` lists JavaScript files to include. `styles` lists CSS or LESS files.
+
+```json
+{
+    "scripts": [
+        "resources/myFeature.js",
+        "resources/myHelper.js"
+    ],
+    "styles": [
+        "resources/myFeature.less"
+    ]
+}
+```
+
+All paths are relative to `localBasePath` (which defaults to the extension root when using `remoteExtPath`).
+
+### packageFiles
+
+`packageFiles` bundles JavaScript files into a CommonJS-style package where each file can use `require()` to import other files in the same module. This is the preferred approach for complex modules:
+
+```json
+{
+    "packageFiles": [
+        "resources/index.js",
+        "resources/api.js",
+        "resources/ui.js"
+    ]
+}
+```
+
+The first file listed (or the file marked `"main": true`) is the entry point. Core uses this pattern extensively:
+
+```php
+// From Resources.php — mediawiki.api module
+'mediawiki.api' => [
+    'localBasePath' => ...,
+    'packageFiles' => [
+        'index.js',
+        'edit.js',
+        'login.js',
+        'messages.js',
+        'options.js',
+        'parse.js',
+        'rest.js',
+        'rollback.js',
+        'upload.js',
+        'user.js',
+        'watch.js',
+        'category.js',
+    ],
+    ...
+]
+```
+
+`packageFiles` entries can also be objects with a `callback` for dynamic content:
+
+```json
+{
+    "packageFiles": [
+        "index.js",
+        {
+            "name": "config.json",
+            "callback": "MyExtension\\ResourceLoader\\MyModule::getConfig"
+        }
+    ]
+}
+```
+
+### dependencies
+
+`dependencies` lists other module names that must be loaded before this module:
+
+```json
+{
+    "dependencies": [
+        "mediawiki.api",
+        "mediawiki.util",
+        "oojs-ui-core"
+    ]
+}
+```
+
+ResourceLoader resolves transitive dependencies automatically. Circular dependencies cause a `CircularDependencyError`.
+
+### messages
+
+`messages` lists i18n message keys that the module needs. The messages are loaded alongside the JavaScript and are accessible via `mw.msg()`:
+
+```json
+{
+    "messages": [
+        "myextension-save-success",
+        "myextension-save-error"
+    ]
+}
+```
+
+In JavaScript:
+
+```javascript
+// After the module is loaded, messages are available:
+console.log( mw.msg( 'myextension-save-success' ) );
+// "Your changes have been saved."
+```
+
+### templates
+
+`templates` maps template names to file paths. Templates are loaded as strings accessible via `mw.templates`:
+
+```json
+{
+    "templates": {
+        "item.html": "resources/templates/item.html"
+    }
+}
+```
+
+In JavaScript:
+
+```javascript
+var template = mw.template.get( 'ext.myExtension.feature', 'item.html' );
+var $html = template.render( { name: 'Example' } );
+```
+
+### skinStyles
+
+`skinStyles` provides skin-specific CSS overrides. Use `"default"` to apply to all skins, or a skin name for targeted overrides:
+
+```json
+{
+    "skinStyles": {
+        "default": [
+            "resources/base.less"
+        ],
+        "monobook": [
+            "resources/monobook.less"
+        ],
+        "vector-2022": [
+            "resources/vector.less"
+        ]
+    }
+}
+```
+
+Core uses this for Parsoid content styling:
+
+```php
+'mediawiki.skinning.content.parsoid' => [
+    'skinStyles' => [
+        'default' => [
+            'resources/src/mediawiki.skinning/content.parsoid.less',
+            'resources/src/mediawiki.skinning/content.media-common.less',
+            'resources/src/mediawiki.skinning/content.media-screen.less',
+        ],
+    ],
+],
+```
+
+### targets
+
+`targets` controls which platforms a module is delivered to:
+
+```json
+{
+    "targets": [ "desktop", "mobile" ]
+}
+```
+
+The default is `["desktop"]`. To include a module on MobileFrontend-powered mobile pages, add `"mobile"`.
+
+## Module types
+
+### Standard file modules
+
+The default module type. Uses the `FileModule` class internally. Supports `scripts`, `styles`, `packageFiles`, `dependencies`, `messages`, `templates`, `skinStyles`, and `targets`.
+
+### Package modules
+
+Modules using `packageFiles` are "package modules" — they bundle multiple JavaScript files into a single scope where files can `require()` each other. This avoids polluting the global scope.
+
+```javascript
+// resources/index.js (entry point)
+var api = require( './api.js' );
+var ui  = require( './ui.js' );
+
+module.exports = { api: api, ui: ui };
+```
+
+```javascript
+// resources/api.js
+var myApi = { fetch: function () { /* ... */ } };
+module.exports = myApi;
+```
+
+### Startup module
+
+The startup module (`mediawiki.loader`) is a special module managed by `StartUpModule`. It is the first module loaded on every page and bootstraps the entire ResourceLoader client. It registers all other module names, version hashes, and dependency graphs in a compact encoding.
+
+The startup module has reserved group IDs for certain module groups:
+
+```php
+private array $groupIds = [
+    // Reserved numbers MUST start at 0 and not skip any.
+    // These are preset for forward compatibility so that they can be safely
+    // referenced by mediawiki.js even when the order of registrations changes.
+    self::GROUP_USER    => 0,
+    self::GROUP_PRIVATE => 1,
+];
+```
+
+<Warning>
+Do not depend on `mediawiki.loader` or the startup module explicitly. ResourceLoader handles startup automatically.
+</Warning>
+
+## Core module groups
+
+### jQuery modules
+
+| Module | Description |
+|---|---|
+| `jquery` | jQuery core library |
+| `jquery.client` | Browser detection utilities |
+| `jquery.confirmable` | Inline confirm/cancel prompts |
+| `jquery.makeCollapsible` | Collapsible sections |
+| `jquery.tablesorter` | Sortable table support |
+| `jquery.chosen` | Select enhancement |
+
+### mediawiki.* core modules
+
+| Module | Description |
+|---|---|
+| `mediawiki.base` | `mw` global, `mw.config`, `mw.message` |
+| `mediawiki.api` | Action API client (`mw.Api`) |
+| `mediawiki.util` | Utility functions (`mw.util`) |
+| `mediawiki.notification` | Notification system (`mw.notification`) |
+| `mediawiki.Title` | Title parsing and normalization |
+| `mediawiki.Uri` | URL parsing |
+| `mediawiki.storage` | localStorage wrapper |
+| `mediawiki.cookie` | Cookie utilities |
+| `mediawiki.jqueryMsg` | Advanced message parser |
+| `mediawiki.router` | Client-side routing |
+| `mediawiki.experiments` | A/B testing |
+
+### Site and user modules
+
+```php
+// Scripts managed by the local wiki (stored in the MediaWiki namespace)
+'site'        => [ 'class' => SiteModule::class ],
+'site.styles' => [ 'class' => SiteStylesModule::class ],
+
+// Scripts managed by the current user (stored in their user space)
+'user'        => [ 'class' => UserModule::class ],
+'user.styles' => [ 'class' => UserStylesModule::class ],
+
+// User preference values, exposed to JS
+'user.options' => [ 'class' => UserOptionsModule::class ],
+```
+
+The `site` module loads `MediaWiki:Common.js`. The `user` module loads the active user's `User:Name/common.js`. These modules belong to the `site` and `user` groups respectively and are loaded on every page.
+
+## Polyfills
+
+Core includes a polyfill bundle for browsers that do not support modern web APIs:
+
+```php
+'web2017-polyfills' => [
+    'scripts' => [
+        'resources/lib/intersection-observer/intersection-observer.js',
+        'resources/lib/fetch-polyfill/fetch.umd.js',
+        'resources/lib/url/URL.js',
+        'resources/lib/url/URL-toJSON.js',
+    ],
+    'skipFunction' => 'resources/src/skip-web2017-polyfills.js',
+    'dependencies'  => []
+],
+```
+
+The `skipFunction` is evaluated client-side. If it returns `true`, the polyfill is skipped entirely, avoiding unnecessary download for modern browsers.

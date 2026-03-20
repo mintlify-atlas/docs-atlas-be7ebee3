@@ -1,0 +1,199 @@
+---
+title: "Installation"
+description: "Step-by-step installation guide for MediaWiki."
+---
+
+This guide covers downloading MediaWiki, installing its PHP dependencies, and running the installer — either through the web-based setup wizard or the CLI.
+
+<Warning>
+  Always back up your database before upgrading an existing MediaWiki installation.
+</Warning>
+
+## Download MediaWiki
+
+You can obtain MediaWiki by cloning the Git repository or downloading a release archive.
+
+<Tabs>
+  <Tab title="Git (Gerrit)">
+    The canonical source is Wikimedia's Gerrit instance:
+
+    ```bash
+    git clone https://gerrit.wikimedia.org/r/mediawiki/core.git mediawiki
+    cd mediawiki
+    git checkout REL1_46
+    ```
+  </Tab>
+  <Tab title="GitHub Mirror">
+    A read-only mirror is available on GitHub:
+
+    ```bash
+    git clone https://github.com/wikimedia/mediawiki.git
+    cd mediawiki
+    git checkout REL1_46
+    ```
+  </Tab>
+  <Tab title="Release Archive">
+    Download and extract a release tarball:
+
+    ```bash
+    tar -xzf mediawiki-1.46.0.tar.gz
+    mv mediawiki-1.46.0 wiki
+    cd wiki
+    ```
+
+    <Note>
+      Release archives already include the `vendor/` directory, so you can skip the Composer step below.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Install Dependencies with Composer
+
+MediaWiki uses [Composer](https://getcomposer.org/) to manage its PHP dependencies. If you cloned from Git, you must run `composer install` before the wiki will work.
+
+```bash
+composer install --no-dev
+```
+
+This installs all packages listed in the `require` section of `composer.json` into the `vendor/` directory, and registers the `MediaWiki\Composer\` autoloader.
+
+<Tip>
+  Omit `--no-dev` if you intend to run tests or use development tools like Phan or PHPCS.
+</Tip>
+
+<Note>
+  The `pre-install-cmd` hook runs `MediaWiki\Composer\VersionChecker::onEvent` to validate your PHP version before installation proceeds. If your PHP version is below 8.2.0, Composer will abort with an error.
+</Note>
+
+## Run the Installer
+
+Choose between the web-based installer and the CLI installer.
+
+### Web-Based Installer
+
+<Steps>
+  <Step title="Place files on your web server">
+    Copy or move the MediaWiki directory into your web server's document root (e.g. `/var/www/html/wiki`).
+  </Step>
+  <Step title="Open the installer in your browser">
+    Navigate to your wiki's URL. If `LocalSettings.php` does not yet exist, MediaWiki automatically redirects to the setup wizard at `mw-config/index.php`.
+
+    Fill in the form with your database credentials, wiki name, and administrator account details.
+  </Step>
+  <Step title="Download LocalSettings.php">
+    At the end of the wizard, MediaWiki generates a `LocalSettings.php` file for you to download. Place this file in the root of your MediaWiki installation.
+
+    <Warning>
+      Download `LocalSettings.php` before leaving the installer — there is no way to retrieve it afterwards.
+    </Warning>
+  </Step>
+  <Step title="Remove or restrict mw-config/">
+    Once the wiki is configured, the installer refuses to run again if `LocalSettings.php` exists. You may optionally remove the `mw-config/` directory for additional security.
+  </Step>
+</Steps>
+
+### CLI Installer
+
+The `maintenance/install.php` script provides a fully scriptable installation path. It is invoked via the `maintenance/run.php` dispatcher:
+
+```bash
+php maintenance/run.php install \
+  --server=http://wiki.example.com \
+  --dbtype=mysql \
+  --dbserver=localhost \
+  --dbname=my_wiki \
+  --dbuser=wikiuser \
+  --dbpass=secret \
+  --pass=adminpassword \
+  MyWiki Admin
+```
+
+The positional arguments are the wiki name (`MyWiki`) and the admin username (`Admin`).
+
+**Full list of CLI options:**
+
+| Option | Default | Description |
+|---|---|---|
+| `--server` | `http://localhost` | Base URL of the web server |
+| `--scriptpath` | `/<dirname>` | Relative path of the wiki in the URL |
+| `--lang` | `en` | Wiki content language |
+| `--dbtype` | `mysql` | Database type (`mysql`, `postgres`, `sqlite`) |
+| `--dbserver` | `localhost` | Database host name or IP |
+| `--dbport` | `5432` | Database port (PostgreSQL only) |
+| `--dbname` | `my_wiki` | Database name |
+| `--dbpath` | `$IP/data` | Path for the SQLite database file |
+| `--dbprefix` | _(none)_ | Optional table name prefix |
+| `--installdbuser` | `root` | DB user used for the install step |
+| `--installdbpass` | _(none)_ | Password for the install DB user |
+| `--dbuser` | `wikiuser` | DB user for normal wiki operations |
+| `--dbpass` | _(none)_ | Password for the normal wiki DB user |
+| `--dbpassfile` | _(none)_ | Read `--dbpass` from a file |
+| `--pass` | _(required)_ | Administrator account password |
+| `--passfile` | _(none)_ | Read `--pass` from a file |
+| `--confpath` | `$IP` | Directory to write `LocalSettings.php` into |
+| `--dbschema` | `mediawiki` | PostgreSQL schema name |
+| `--with-extensions` | _(flag)_ | Detect and include installed extensions |
+| `--extensions` | _(none)_ | Comma-separated list of extensions to enable |
+| `--skins` | _(all)_ | Comma-separated list of skins to enable |
+| `--with-developmentsettings` | _(flag)_ | Load `DevelopmentSettings.php` from `LocalSettings.php` |
+| `--env-checks` | _(flag)_ | Run environment checks only, make no changes |
+
+## SQLite Quick-Install (Development)
+
+The `composer.json` `scripts` section includes a one-command SQLite install for local development:
+
+```bash
+composer mw-install:sqlite
+```
+
+This runs the following command internally:
+
+```bash
+php maintenance/run.php install \
+  --server=http://localhost:4000 \
+  --dbtype=sqlite \
+  --with-developmentsettings \
+  --dbpath=cache/ \
+  --scriptpath= \
+  --pass=adminpassword \
+  MediaWiki Admin
+```
+
+The SQLite database file is stored in `cache/`. The wiki is served at `http://localhost:4000` with an empty script path.
+
+## Start the Development Server
+
+After installing, start PHP's built-in web server with:
+
+```bash
+composer serve
+```
+
+This is equivalent to:
+
+```bash
+PHP_CLI_SERVER_WORKERS=8 MW_LOG_DIR=logs MW_LOG_STDERR=1 php -S 127.0.0.1:4000
+```
+
+Your wiki will be available at `http://localhost:4000`.
+
+<Note>
+  The built-in PHP server is for development only. For production, use Apache or Nginx.
+</Note>
+
+## Docker (Development)
+
+A `docker-compose.yml` is provided for containerized development. It uses Wikimedia's official PHP 8.3 FPM image with an Apache frontend:
+
+```bash
+cp .env.example .env   # configure UID/GID and port
+docker compose up
+```
+
+The default configuration sets:
+- Wiki served at `http://localhost:8080`
+- Database: SQLite stored at `/var/www/html/w/cache/sqlite`
+- Admin credentials: `Admin` / `dockerpass`
+- Log directory: `/var/www/html/w/cache`
+
+A separate `mediawiki-jobrunner` service handles background job processing.

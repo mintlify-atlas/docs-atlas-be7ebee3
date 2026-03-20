@@ -1,0 +1,348 @@
+---
+title: "Query API"
+description: "Using action=query to read pages, revisions, categories, and other wiki data."
+---
+
+`action=query` is the main read interface of the MediaWiki Action API. It is implemented in `ApiQuery` and works by assembling a set of pages (the *page set*) and then running one or more sub-modules against that set to collect data.
+
+Query sub-modules come in three types:
+
+| Type | Parameter | Purpose |
+|------|-----------|----------|
+| **prop** | `prop=` | Retrieve properties of the pages in the page set |
+| **list** | `list=` | Enumerate items from an index (not page-specific) |
+| **meta** | `meta=` | Return information about the wiki or the current session |
+
+Multiple sub-modules of any type can be combined in a single request.
+
+## Specifying pages
+
+The page set is populated through one of these mutually exclusive parameters:
+
+<ParamField query="titles" type="string">
+  Pipe-separated list of page titles. E.g., `titles=MediaWiki|Help:Contents`.
+</ParamField>
+
+<ParamField query="pageids" type="integer">
+  Pipe-separated list of page IDs. E.g., `pageids=1|2|3`.
+</ParamField>
+
+<ParamField query="revids" type="integer">
+  Pipe-separated list of revision IDs. Resolves to the pages those revisions belong to.
+</ParamField>
+
+Up to 50 titles or page IDs can be passed per request (500 for users with the `apihighlimits` right, typically bots and sysops).
+
+## Prop modules
+
+Prop modules attach data to each page in the page set. They are passed as a pipe-separated list in `prop=`.
+
+### revisions
+
+Fetches revision data for each page. Returns the most recent revision by default.
+
+```
+https://en.wikipedia.org/w/api.php?action=query&titles=MediaWiki&prop=revisions&rvprop=content|timestamp|user&format=json&formatversion=2
+```
+
+Key `rvprop` values:
+
+| Value | Description |
+|-------|-------------|
+| `ids` | Revision ID and parent revision ID |
+| `flags` | Minor-edit flag |
+| `timestamp` | Timestamp of the revision |
+| `user` | Username of the editor |
+| `userid` | User ID of the editor |
+| `comment` | Edit summary |
+| `parsedcomment` | Edit summary rendered as HTML |
+| `content` | Full wikitext of the revision (expensive; use with care) |
+| `tags` | Change tags applied to the revision |
+| `roles` | Slot roles present in the revision |
+| `sha1` | SHA-1 hash of the revision content |
+| `size` | Size of the revision in bytes |
+
+<Warning>
+  Fetching `rvprop=content` for many pages in a single request is expensive. Prefer fetching content one page at a time or use a `generator` to control throughput.
+</Warning>
+
+### info
+
+Returns basic page information: namespace, last-edit timestamp, page ID, talk page, redirect target, protection levels, and more. Implemented in `ApiQueryInfo`.
+
+```
+https://en.wikipedia.org/w/api.php?action=query&titles=Main_Page&prop=info&inprop=protection|talkid|watched&format=json&formatversion=2
+```
+
+### categories
+
+Lists the categories a page belongs to.
+
+```
+https://en.wikipedia.org/w/api.php?action=query&titles=Python_(programming_language)&prop=categories&format=json&formatversion=2
+```
+
+### links
+
+Lists all internal wiki links on a page.
+
+### images
+
+Lists all files (images, audio, etc.) embedded on a page.
+
+### templates
+
+Lists all templates transcluded on a page.
+
+### imageinfo
+
+Returns file metadata for each file page in the page set: dimensions, MIME type, upload timestamp, uploader, SHA-1 hash, and URLs.
+
+### pageprops
+
+Returns key-value pairs stored as page properties (e.g., `wikibase_item` for Wikidata entity IDs, `defaultsort` for sort keys).
+
+### extlinks
+
+Lists all external URLs present in the page's wikitext.
+
+### langlinks
+
+Lists interlanguage links on the page.
+
+### contributors
+
+Returns the list of non-anonymous editors who have contributed to the page.
+
+### deletedrevisions
+
+Lists deleted revisions for the specified pages. Requires the `deletedhistory` permission.
+
+## List modules
+
+List modules enumerate items from database indexes. They are passed in `list=`.
+
+### allpages
+
+Enumerates all pages in a given namespace.
+
+```
+https://en.wikipedia.org/w/api.php?action=query&list=allpages&apnamespace=0&aplimit=10&format=json&formatversion=2
+```
+
+### allrevisions
+
+Enumerates all revisions (across all pages), filterable by user, namespace, and date range.
+
+### recentchanges
+
+Returns recent changes to the wiki, equivalent to `Special:RecentChanges`.
+
+```
+https://en.wikipedia.org/w/api.php?action=query&list=recentchanges&rclimit=5&rcprop=title|timestamp|user|comment&format=json&formatversion=2
+```
+
+### watchlist
+
+Returns recent changes to pages on the authenticated user's watchlist. Requires authentication.
+
+### categorymembers
+
+Lists all pages in a given category.
+
+```
+https://en.wikipedia.org/w/api.php?action=query&list=categorymembers&cmtitle=Category:Wikipedia&cmlimit=20&format=json&formatversion=2
+```
+
+### search
+
+Performs a full-text search.
+
+```
+https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=MediaWiki&format=json&formatversion=2
+```
+
+### logevents
+
+Enumerates log entries (move, delete, protect, block, etc.).
+
+### usercontribs
+
+Returns all edits made by a specific user.
+
+```
+https://en.wikipedia.org/w/api.php?action=query&list=usercontribs&ucuser=Jimbo_Wales&uclimit=5&format=json&formatversion=2
+```
+
+### blocks
+
+Lists active blocks.
+
+### allcategories
+
+Enumerates all categories on the wiki.
+
+### allusers
+
+Enumerates registered user accounts.
+
+### backlinks / embeddedin / imageusage
+
+Return pages that link to, transclude, or use a given page or file.
+
+## Meta modules
+
+Meta modules return information about the wiki or the current session. They are passed in `meta=`.
+
+### siteinfo
+
+Returns wiki-wide configuration. Implemented in `ApiQuerySiteinfo`.
+
+```
+https://en.wikipedia.org/w/api.php?action=query&meta=siteinfo&siprop=general|namespaces|statistics&format=json&formatversion=2
+```
+
+Key `siprop` values: `general`, `namespaces`, `namespacealias`, `specialpagealiases`, `statistics`, `skins`, `extensiontags`, `usergroups`, `libraries`, `extensions`, `fileextensions`, `rightsinfo`, `interwikimap`.
+
+### userinfo
+
+Returns information about the currently authenticated user: username, user ID, groups, rights, email address, edit count, and preferences.
+
+```
+https://en.wikipedia.org/w/api.php?action=query&meta=userinfo&uiprop=groups|rights|editcount&format=json&formatversion=2
+```
+
+### tokens
+
+Returns security tokens required for write operations. See the [Edit API](/api/action/edit) and [Authentication](/api/action/authentication) pages for usage.
+
+Token types (from `ApiQueryTokens`): `csrf`, `watch`, `patrol`, `rollback`, `userrights`, `login`, `createaccount`.
+
+```
+https://en.wikipedia.org/w/api.php?action=query&meta=tokens&type=csrf&format=json&formatversion=2
+```
+
+### authmanagerinfo
+
+Returns information about the available authentication providers — useful before initiating a `clientlogin` flow.
+
+## Continuation
+
+When a query returns more results than the limit, the response includes a `continue` object. Pass all key-value pairs from `continue` back to the next request to retrieve the next page of results.
+
+<CodeGroup>
+
+```bash curl
+# First request
+curl "https://en.wikipedia.org/w/api.php?action=query&list=allpages&aplimit=10&format=json&formatversion=2"
+
+# Response includes:
+# "continue": { "apcontinue": "Anthropology", "continue": "-||" }
+
+# Next request — pass all continue values
+curl "https://en.wikipedia.org/w/api.php?action=query&list=allpages&aplimit=10&apcontinue=Anthropology&continue=-||&format=json&formatversion=2"
+```
+
+```python Python
+import requests
+
+S = requests.Session()
+API_URL = "https://en.wikipedia.org/w/api.php"
+
+params = {
+    "action": "query",
+    "list": "allpages",
+    "aplimit": 10,
+    "format": "json",
+    "formatversion": "2",
+}
+
+while True:
+    response = S.get(API_URL, params=params).json()
+    pages = response["query"]["allpages"]
+    for page in pages:
+        print(page["title"])
+
+    if "continue" not in response:
+        break
+    params.update(response["continue"])
+```
+
+</CodeGroup>
+
+<Note>
+  Always iterate using the `continue` object wholesale — do not attempt to manually construct continuation parameters. The keys and values in `continue` are opaque and may change between MediaWiki versions.
+</Note>
+
+## Generator pattern
+
+A generator turns a list module into a page-set source, feeding its results as input to prop modules. This avoids a two-step request (first list pages, then query properties for each).
+
+Prefix the list module name with `generator=` and its parameters with `g`:
+
+```
+https://en.wikipedia.org/w/api.php?action=query
+  &generator=categorymembers
+  &gcmtitle=Category:MediaWiki
+  &gcmlimit=10
+  &prop=revisions
+  &rvprop=timestamp|user
+  &format=json&formatversion=2
+```
+
+This returns the 10 most recent revision timestamps and editors for pages in the `Category:MediaWiki` category in a single request.
+
+## Common query patterns
+
+### Get wikitext content of a page
+
+```bash
+curl "https://en.wikipedia.org/w/api.php?action=query\
+  &titles=Python_(programming_language)\
+  &prop=revisions\
+  &rvprop=content\
+  &rvslots=main\
+  &format=json&formatversion=2"
+```
+
+<ResponseField name="query.pages[].revisions[].slots.main.content" type="string">
+  The raw wikitext of the page's main slot.
+</ResponseField>
+
+### Get the latest revision ID
+
+```bash
+curl "https://en.wikipedia.org/w/api.php?action=query&titles=MediaWiki&prop=revisions&rvprop=ids&format=json&formatversion=2"
+```
+
+### Check whether pages exist
+
+```bash
+curl "https://en.wikipedia.org/w/api.php?action=query&titles=Real_page|Nonexistent_page_XYZ&prop=info&format=json&formatversion=2"
+```
+
+Missing pages are returned with `"missing": true` in `formatversion=2`.
+
+### Get recent changes in the last hour
+
+```bash
+curl "https://en.wikipedia.org/w/api.php?action=query\
+  &list=recentchanges\
+  &rclimit=50\
+  &rcprop=title|timestamp|user|comment|sizes\
+  &rcstart=$(date -u +%Y-%m-%dT%H:%M:%SZ)\
+  &rcdir=older\
+  &format=json&formatversion=2"
+```
+
+### Get all pages in a category with their sizes
+
+```bash
+curl "https://en.wikipedia.org/w/api.php?action=query\
+  &generator=categorymembers\
+  &gcmtitle=Category:Featured_articles\
+  &gcmlimit=20\
+  &prop=info\
+  &inprop=\
+  &format=json&formatversion=2"
+```

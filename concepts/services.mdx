@@ -1,0 +1,250 @@
+---
+title: "Service Container"
+description: "Dependency injection with MediaWikiServices: accessing and creating services."
+---
+
+MediaWiki uses a service container and dependency injection (DI) pattern to manage shared objects. Rather than instantiating dependencies directly or relying on global singletons scattered through the codebase, services are registered centrally and injected where needed.
+
+## What the Service Container Is
+
+The heart of DI in MediaWiki is `MediaWikiServices`, which acts as the top-level factory (or registry) for services. It represents the tree of service objects that define MediaWiki's application logic and serves as the entry point to all dependency injection for core.
+
+When `MediaWikiServices::getInstance()` is first called, it creates an instance and populates it with services defined in `includes/ServiceWiring.php`, as well as any additional wiring files listed in `$wgServiceWiringFiles`.
+
+```php
+// Defined in includes/MediaWikiServices.php
+namespace MediaWiki;
+
+class MediaWikiServices extends ServiceContainer {
+    // ...
+    public static function getInstance(): self { ... }
+}
+```
+
+<Note>
+`MediaWikiServices` extends `Wikimedia\Services\ServiceContainer`. It has been available since MediaWiki 1.27.
+</Note>
+
+## Accessing Services
+
+The primary API is typed getter methods on `MediaWikiServices`:
+
+```php
+use MediaWiki\MediaWikiServices;
+
+$services = MediaWikiServices::getInstance();
+
+// Revision and page storage
+$revisionStore   = $services->getRevisionStore();
+$pageStore       = $services->getPageStore();
+
+// Database
+$lbFactory       = $services->getDBLoadBalancerFactory();
+$lb              = $services->getDBLoadBalancer();
+
+// Hook system
+$hookContainer   = $services->getHookContainer();
+
+// Users
+$userFactory     = $services->getUserFactory();
+$userGroupMgr    = $services->getUserGroupManager();
+
+// Titles and links
+$titleFormatter  = $services->getTitleFormatter();
+$titleParser     = $services->getTitleParser();
+$linkRenderer    = $services->getLinkRenderer();
+
+// Search
+$searchEngineFactory = $services->getSearchEngineFactory();
+
+// Permissions
+$permissionManager = $services->getPermissionManager();
+```
+
+<Warning>
+`MediaWikiServices::getInstance()` should only be called in **static entry points** (such as static hook handlers or legacy functions). Application logic in service classes should receive services via constructor injection — never by calling `getInstance()` inside an instance method or accepting the `MediaWikiServices` object itself as a constructor parameter.
+</Warning>
+
+## Common Services
+
+<CardGroup cols={2}>
+  <Card title="RevisionStore" icon="clock-rotate-left">
+    Loading and storing page revisions. Use `getRevisionStore()`.
+  </Card>
+  <Card title="PageStore" icon="file">
+    Loading `PageRecord` objects by ID, name, or title. Use `getPageStore()`.
+  </Card>
+  <Card title="DBLoadBalancerFactory" icon="database">
+    Database connection management across wikis. Use `getDBLoadBalancerFactory()`.
+  </Card>
+  <Card title="HookContainer" icon="link">
+    Registering and dispatching hook calls. Use `getHookContainer()`.
+  </Card>
+  <Card title="UserFactory" icon="user">
+    Creating `User` objects from user identities. Use `getUserFactory()`.
+  </Card>
+  <Card title="TitleFormatter" icon="tag">
+    Formatting `TitleValue` objects into display strings. Use `getTitleFormatter()`.
+  </Card>
+  <Card title="PermissionManager" icon="lock">
+    Checking user permissions against pages. Use `getPermissionManager()`.
+  </Card>
+  <Card title="ParserFactory" icon="code">
+    Creating `Parser` instances for wikitext parsing. Use `getParserFactory()`.
+  </Card>
+</CardGroup>
+
+## Injecting Services into Classes (Preferred Pattern)
+
+Constructor injection is strongly preferred over calling `getInstance()` inside business logic:
+
+```php
+use MediaWiki\Revision\RevisionStore;
+use MediaWiki\Page\PageStore;
+use MediaWiki\HookContainer\HookContainer;
+use MediaWiki\HookContainer\HookRunner;
+
+class MyService {
+    private RevisionStore $revisionStore;
+    private PageStore $pageStore;
+    private HookRunner $hookRunner;
+
+    public function __construct(
+        RevisionStore $revisionStore,
+        PageStore $pageStore,
+        HookContainer $hookContainer
+    ) {
+        $this->revisionStore = $revisionStore;
+        $this->pageStore = $pageStore;
+        $this->hookRunner = new HookRunner( $hookContainer );
+    }
+
+    public function doSomething( $pageId ): void {
+        $page = $this->pageStore->getPageById( $pageId );
+        // ...
+    }
+}
+```
+
+The wiring for this service in `ServiceWiring.php` would look like:
+
+```php
+'MyService' => static function ( MediaWikiServices $services ): MyService {
+    return new MyService(
+        $services->getRevisionStore(),
+        $services->getPageStore(),
+        $services->getHookContainer()
+    );
+},
+```
+
+### Using ServiceOptions for Configuration
+
+When a service requires multiple configuration values, use `ServiceOptions` with a `CONSTRUCTOR_OPTIONS` constant:
+
+```php
+class DemoService {
+    public const CONSTRUCTOR_OPTIONS = [
+        'Foo',
+        'Bar',
+    ];
+
+    public function __construct( private readonly ServiceOptions $options ) {
+        $options->assertRequiredOptions( self::CONSTRUCTOR_OPTIONS );
+        // Access as: $this->options->get( 'Foo' )
+        //            $this->options->get( 'Bar' )
+    }
+}
+```
+
+In `ServiceWiring.php`:
+
+```php
+'DemoService' => static function ( MediaWikiServices $services ): DemoService {
+    return new DemoService(
+        new ServiceOptions(
+            DemoService::CONSTRUCTOR_OPTIONS,
+            $services->getMainConfig()
+        ),
+    );
+},
+```
+
+## ServiceWiring.php
+
+`includes/ServiceWiring.php` contains the default instantiator (factory) functions for all core services. It returns a PHP array where each key is a service name and each value is a static closure that receives the `MediaWikiServices` container and returns a new service instance.
+
+```php
+// From includes/ServiceWiring.php
+'ActorStoreFactory' => static function ( MediaWikiServices $services ): ActorStoreFactory {
+    return new ActorStoreFactory(
+        new ServiceOptions( ActorStoreFactory::CONSTRUCTOR_OPTIONS, $services->getMainConfig() ),
+        $services->getDBLoadBalancerFactory(),
+        $services->getUserNameUtils(),
+        $services->getTempUserConfig(),
+        LoggerFactory::getInstance( 'ActorStore' ),
+        $services->getHideUserUtils()
+    );
+},
+
+'ArchivedRevisionLookup' => static function ( MediaWikiServices $services ): ArchivedRevisionLookup {
+    return new ArchivedRevisionLookup(
+        $services->getConnectionProvider(),
+        $services->getRevisionStore()
+    );
+},
+```
+
+<Note>
+Services must not vary their behavior on global state such as the current web request, `RequestContext`, or the current user. This ensures they are safe to use across web requests, APIs, jobs, and maintenance scripts.
+</Note>
+
+## Creating Services in Extensions
+
+Extensions register additional service wiring files via `ServiceWiringFiles` in `extension.json`:
+
+```json
+{
+    "name": "FoodProcessor",
+    "ServiceWiringFiles": [
+        "includes/ServiceWiring.php"
+    ]
+}
+```
+
+The extension's `ServiceWiring.php` follows the same format as core's:
+
+```php
+// extensions/FoodProcessor/includes/ServiceWiring.php
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Extension\FoodProcessor\MashingService;
+
+return [
+    'FoodProcessor.MashingService' => static function ( MediaWikiServices $services ): MashingService {
+        return new MashingService(
+            $services->getRevisionStore(),
+            $services->getHookContainer()
+        );
+    },
+];
+```
+
+Extensions can also **replace** a core service using the `MediaWikiServices` hook:
+
+```php
+// In a hook handler
+public function onMediaWikiServices( MediaWikiServices $services ): void {
+    $services->redefineService(
+        'SomeCorService',
+        static function ( MediaWikiServices $services ) {
+            return new MyCustomImplementation();
+        }
+    );
+}
+```
+
+## Service Reset
+
+Services receive configuration at instantiation time. Changes to global configuration variables after a service is created have no effect on it. To address this, `Setup.php` calls `MediaWikiServices::resetGlobalInstance()` once configuration and extension registration is complete.
+
+Services that manage their own singletons (unmanaged legacy services) must not hold references to services managed by `MediaWikiServices`, because after a reset those references become stale.

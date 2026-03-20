@@ -1,0 +1,265 @@
+---
+title: "Caching"
+description: "MediaWiki's cache architecture: object caches, parser cache, CDN integration, and cache purging."
+---
+
+MediaWiki uses several independent caching layers to reduce database load and improve response times. Understanding which layer to configure is key to scaling a wiki.
+
+<CardGroup cols={2}>
+  <Card title="Object Cache" icon="database">
+    General-purpose key-value store for arbitrary data. Configured via `$wgMainCacheType`. Backends include APCu, Memcached, and Redis.
+  </Card>
+  <Card title="WAN Object Cache" icon="network-wired">
+    A distributed cache layer built on top of the object cache. Handles cross-datacenter invalidation and stampede protection.
+  </Card>
+  <Card title="Parser Cache" icon="code">
+    Stores the rendered HTML output of wikitext pages. Configured via `$wgParserCacheType`. Avoids re-parsing unchanged pages.
+  </Card>
+  <Card title="CDN / Squid" icon="globe">
+    An HTTP reverse proxy cache in front of MediaWiki. MediaWiki sends `Purge` requests to CDN servers when pages change.
+  </Card>
+</CardGroup>
+
+---
+
+## $wgMainCacheType
+
+The primary object cache is controlled by `$wgMainCacheType`. MediaWiki also uses `$wgMessageCacheType` and `$wgParserCacheType` for more specific caches, which fall back to `$wgMainCacheType` if not set independently.
+
+| Constant | Description |
+|----------|-------------|
+| `CACHE_NONE` | No caching (default; suitable for development only) |
+| `CACHE_DB` | Store in the database `objectcache` table (always available, but slow) |
+| `CACHE_ACCEL` | Use a PHP opcode cache extension: APCu if available, else falls back |
+| `CACHE_MEMCACHED` | Use Memcached servers listed in `$wgMemCachedServers` |
+| `CACHE_ANYTHING` | Use the best available cache; falls back to `CACHE_DB` if nothing else configured |
+| `'redis'` | Use a Redis backend defined in `$wgObjectCaches` |
+
+```php
+// LocalSettings.php
+
+// Use APCu (single-server deployments)
+$wgMainCacheType = CACHE_ACCEL;
+
+// Use Memcached
+$wgMainCacheType = CACHE_MEMCACHED;
+$wgMemCachedServers = [ '127.0.0.1:11211' ];
+
+// Use Redis (custom key in $wgObjectCaches)
+$wgMainCacheType = 'redis';
+```
+
+---
+
+## Local Server Cache (APCu)
+
+APCu stores data in shared memory on the local server. It is the fastest option for single-server setups, but data is not shared between servers.
+
+```php
+// Enable APCu as the main cache
+$wgMainCacheType = CACHE_ACCEL;
+```
+
+<Note>
+APCu is only suitable when all web requests are served from a single server. In a multi-server setup, use Memcached or Redis so all servers share the same cache.
+</Note>
+
+---
+
+## Memcached
+
+```php
+// Single Memcached server
+$wgMainCacheType    = CACHE_MEMCACHED;
+$wgMemCachedServers = [ '127.0.0.1:11211' ];
+
+// Multiple servers with weights
+$wgMemCachedServers = [
+    '10.0.0.1:11211',
+    '10.0.0.2:11211',
+    '10.0.0.3:11211',
+];
+
+// Persistent connections (recommended)
+$wgMemCachedPersistent = true;
+
+// Timeout in microseconds
+$wgMemCachedTimeout = 500000; // 0.5 seconds
+```
+
+---
+
+## Redis
+
+Redis is configured by adding an entry to `$wgObjectCaches` and then referencing it by key:
+
+```php
+// Define a Redis cache backend
+$wgObjectCaches['redis'] = [
+    'class'       => 'RedisBagOStuff',
+    'servers'     => [ '127.0.0.1:6379' ],
+    'persistent'  => true,
+    'password'    => null,   // set if Redis requires AUTH
+    'connectTimeout' => 2,
+    'readTimeout'    => 2,
+];
+
+// Use it as the main cache
+$wgMainCacheType = 'redis';
+
+// Optionally use it for the session store as well
+$wgSessionCacheType = 'redis';
+```
+
+---
+
+## WAN Object Cache
+
+`WANObjectCache` is a distributed caching abstraction that sits on top of any `BagOStuff` backend. It provides:
+
+- **Multi-key reads** for efficiency
+- **Check-and-set** to prevent cache poisoning
+- **Stampede protection** with probabilistic early expiry
+- **Cross-datacenter invalidation** via version numbers
+
+The WAN cache is used throughout MediaWiki core for data that must be consistent across multiple servers. It is automatically wired to `$wgMainCacheType`.
+
+```php
+// Accessing WANObjectCache in extension code
+$wanCache = MediaWikiServices::getInstance()->getMainWANObjectCache();
+
+$value = $wanCache->getWithSetCallback(
+    $wanCache->makeKey( 'myext', 'mydata', $id ),
+    WANObjectCache::TTL_DAY,
+    function ( $oldValue, &$ttl, array &$setOpts ) use ( $id ) {
+        // This callback runs when the cache misses
+        $setOpts += Database::getCacheSetOptions( wfGetDB( DB_REPLICA ) );
+        return expensiveLookup( $id );
+    }
+);
+```
+
+---
+
+## Parser Cache
+
+The parser cache stores the HTML output from rendering wikitext. When a page is requested, MediaWiki checks the parser cache first and only re-parses if the cache is stale or missing.
+
+```php
+// Use a dedicated cache for parser output (optional; defaults to $wgMainCacheType)
+$wgParserCacheType = CACHE_MEMCACHED;
+
+// Parser cache expiry in seconds (default: 1 day)
+$wgParserCacheExpireTime = 86400;
+
+// Message cache expiry
+$wgMessageCacheType   = CACHE_ACCEL;
+$wgMsgCacheExpiry     = 86400;
+```
+
+<Tip>
+For wikis where most pages rarely change, increasing `$wgParserCacheExpireTime` reduces re-parse frequency and database load. Pages are always invalidated immediately when edited.
+</Tip>
+
+---
+
+## CDN / Squid Integration
+
+MediaWiki can purge cached pages from CDN/Varnish/Squid servers when content changes. Set `$wgUseCdn = true` and list your servers:
+
+```php
+// Enable CDN support
+$wgUseCdn = true;
+
+// Single CDN/Varnish server
+$wgCdnServers = [ '10.0.0.10' ];
+
+// Maximum age for cached pages (seconds)
+$wgSquidMaxage = 18000;
+
+// Shared cache via HTCP multicast (for Squid clusters)
+$wgHTCPRouting = [
+    '' => [ 'host' => '239.128.0.112', 'port' => 4827 ],
+];
+```
+
+When a page is edited, MediaWiki automatically sends HTTP `PURGE` requests to the listed CDN servers for all affected URLs.
+
+---
+
+## Purging Caches
+
+### Purge Specific Pages
+
+```bash
+# Purge a list of URLs from the CDN/file cache
+php maintenance/run.php purgeList --titles page-list.txt
+
+# Purge a single page
+php maintenance/run.php purgePage --title "Main_Page"
+```
+
+### Purge the Parser Cache
+
+```bash
+# Delete all entries from the parser cache older than 1 day
+php maintenance/run.php purgeParserCache --age 86400
+
+# Delete entries for a specific namespace
+php maintenance/run.php purgeParserCache --namespace 0
+```
+
+### Rebuild the File Cache
+
+```bash
+# Rebuild the static HTML file cache for the main namespace
+php maintenance/run.php rebuildFileCache --namespace 0
+
+# Prune stale entries from the file cache
+php maintenance/run.php pruneFileCache
+```
+
+### Purge Changed Files
+
+```bash
+# Purge CDN cache for files changed since a timestamp
+php maintenance/run.php purgeChangedFiles --starttime 20240101000000
+
+# Purge CDN cache for pages changed since a timestamp
+php maintenance/run.php purgeChangedPages --starttime 20240101000000
+```
+
+### Rebuild Localisation Cache
+
+```bash
+# Rebuild the localisation cache (run after updating MediaWiki or extensions)
+php maintenance/run.php rebuildLocalisationCache
+
+# Rebuild for a specific language only
+php maintenance/run.php rebuildLocalisationCache --lang fr
+```
+
+---
+
+## Recommended Production Configuration
+
+```php
+// LocalSettings.php — production multi-server setup
+
+// Shared object cache via Memcached
+$wgMainCacheType    = CACHE_MEMCACHED;
+$wgMemCachedServers = [ '10.0.0.1:11211', '10.0.0.2:11211' ];
+$wgMemCachedPersistent = true;
+
+// Parser cache also uses Memcached
+$wgParserCacheType    = CACHE_MEMCACHED;
+$wgParserCacheExpireTime = 3600 * 24; // 1 day
+
+// CDN integration
+$wgUseCdn     = true;
+$wgCdnServers = [ '10.0.0.10', '10.0.0.11' ];
+$wgSquidMaxage = 18000;
+
+// Disable inline job execution (use cron instead)
+$wgJobRunRate = 0;
+```

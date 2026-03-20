@@ -1,0 +1,243 @@
+---
+title: "Action API Overview"
+description: "MediaWiki's Action API: the primary interface for programmatic wiki operations."
+---
+
+The MediaWiki Action API is the primary interface for reading from and writing to any MediaWiki installation programmatically. All requests go to a single endpoint — `/w/api.php` — and the `action` parameter selects which operation to perform. The API is defined in `ApiMain` (the dispatcher) and `ApiBase` (the abstract base all modules extend).
+
+<Note>
+  The Action API is distinct from the newer REST API (`/w/rest.php`). The Action API remains the most complete interface and is used by bots, gadgets, and third-party tools throughout the Wikimedia ecosystem.
+</Note>
+
+## Entry point
+
+Every request is an HTTP GET or POST to:
+
+```
+https://en.wikipedia.org/w/api.php
+```
+
+The `action` parameter specifies the module to invoke. Omitting it (or using `action=help`) returns the built-in API documentation.
+
+```bash
+curl "https://en.wikipedia.org/w/api.php?action=query&titles=MediaWiki&format=json"
+```
+
+## Request and response format
+
+The API accepts parameters as URL query string values (GET) or form-encoded body values (POST). Write operations must use POST.
+
+The default response format when accessed from a browser is `jsonfm` — JSON with HTML formatting for human readability. For programmatic use, always pass `format=json`.
+
+<ParamField query="format" type="string" default="jsonfm">
+  Output format. Use `json` for production use. Other supported formats: `xml`, `php`, `rawfm`, `none`.
+</ParamField>
+
+<ParamField query="formatversion" type="integer" default="1">
+  Controls JSON output structure. `formatversion=2` is the modern format: booleans are actual booleans (not empty strings), arrays are arrays (not objects with numeric keys), and missing values are omitted rather than returned as `false`. New code should always use `formatversion=2`.
+</ParamField>
+
+### Version 1 vs version 2 output
+
+<CodeGroup>
+
+```json formatversion=1 (legacy)
+{
+  "query": {
+    "pages": {
+      "1": {
+        "pageid": 1,
+        "ns": 0,
+        "title": "MediaWiki",
+        "missing": ""
+      }
+    }
+  }
+}
+```
+
+```json formatversion=2 (modern)
+{
+  "query": {
+    "pages": [
+      {
+        "pageid": 1,
+        "ns": 0,
+        "title": "MediaWiki",
+        "missing": true
+      }
+    ]
+  }
+}
+```
+
+</CodeGroup>
+
+## Common parameters
+
+These parameters are accepted by all API modules:
+
+<ParamField query="action" type="string" required>
+  The action to perform. Selects the API module to execute. See [Available modules](#available-modules) below.
+</ParamField>
+
+<ParamField query="format" type="string" default="jsonfm">
+  Output serialization format. Use `format=json` for programmatic access.
+</ParamField>
+
+<ParamField query="formatversion" type="integer" default="1">
+  Output format version. `2` produces cleaner JSON; strongly recommended for all new code.
+</ParamField>
+
+<ParamField query="maxlag" type="integer">
+  Maximum replication lag (in seconds) to tolerate. If the database replica lags beyond this value, the API returns an error with a `Retry-After` header. Recommended value for bots: `5`. This prevents bots from overloading the database during high-lag periods.
+</ParamField>
+
+<ParamField query="requestid" type="string">
+  An arbitrary string included verbatim in the response. Useful for correlating requests in client-side logging.
+</ParamField>
+
+<ParamField query="origin" type="string">
+  Required for cross-origin (CORS) requests. Pass the requesting origin (e.g., `https://example.com`). Use `*` for unauthenticated cross-origin read access. When using `*`, tokens cannot be obtained.
+</ParamField>
+
+<ParamField query="uselang" type="string" default="user">
+  Language for localised messages in the response. Accepts a BCP-47 language code or `user` (the authenticated user's preference) or `content` (the wiki's content language).
+</ParamField>
+
+<ParamField query="errorformat" type="string" default="bc">
+  Format for error and warning messages. `bc` (backwards-compatible), `plaintext`, `wikitext`, `html`, `raw`, or `none`.
+</ParamField>
+
+<ParamField query="assert" type="string">
+  Abort with an error if the assertion fails. `user` asserts the caller is logged in; `bot` asserts the caller has the `bot` user right; `anon` asserts the caller is not logged in.
+</ParamField>
+
+## Available modules
+
+The `ApiMain` class registers all built-in action modules. The table below lists the most commonly used ones:
+
+| action | Description |
+|--------|-------------|
+| `query` | Read pages, revisions, categories, site metadata, and more |
+| `edit` | Create or modify page content |
+| `login` | Authenticate with username and password (use bot passwords) |
+| `clientlogin` | Authenticate via the AuthManager flow (interactive login) |
+| `logout` | End the current session |
+| `createaccount` | Create a new user account |
+| `parse` | Parse wikitext and return HTML |
+| `expandtemplates` | Expand templates in wikitext |
+| `opensearch` | Search for pages matching a prefix |
+| `compare` | Produce a diff between two revisions |
+| `purge` | Purge the cache for specified pages |
+| `rollback` | Revert the last set of edits to a page |
+| `delete` | Delete a page |
+| `undelete` | Restore a deleted page |
+| `protect` | Set protection levels on a page |
+| `move` | Move (rename) a page |
+| `block` | Block a user |
+| `unblock` | Unblock a user |
+| `upload` | Upload a file |
+| `help` | Return built-in module documentation |
+| `paraminfo` | Return parameter metadata for one or more modules |
+| `checktoken` | Validate a CSRF token |
+| `validatepassword` | Check a password against the wiki's policy |
+
+<Tip>
+  Discover the full module list and their parameters at `Special:ApiSandbox` on any MediaWiki wiki, or by calling `action=help&recursivesubmodules=1`.
+</Tip>
+
+## API sandbox
+
+Every MediaWiki installation with the API enabled includes an interactive sandbox at `Special:ApiSandbox`. It lets you:
+
+- Browse all available modules and their parameters
+- Execute requests and inspect the raw JSON response
+- Generate equivalent `curl` commands
+
+On Wikimedia wikis, the sandbox is at `https://en.wikipedia.org/wiki/Special:ApiSandbox`.
+
+## Rate limiting and bot flags
+
+The API enforces rate limits on write operations. Authenticated users with the `bot` flag receive higher limits. To mark API requests as bot edits (excluded from recent changes by default), pass `bot=1` to `action=edit` — this requires the `bot` user right.
+
+For unattended scripts, use a [bot password](/api/action/authentication) created at `Special:BotPasswords` rather than your main account credentials. Bot passwords support fine-grained permission scopes and do not expose your account password.
+
+The `maxlag` parameter is the standard mechanism for well-behaved bots to back off during database replication lag:
+
+```bash
+curl -X POST "https://en.wikipedia.org/w/api.php" \
+  --data "action=edit&maxlag=5&title=Sandbox&text=test&token=...&format=json"
+```
+
+If replication lag exceeds `maxlag` seconds, the server responds with HTTP 200 and:
+
+```json
+{
+  "error": {
+    "code": "maxlag",
+    "info": "Waiting for db1234: 7 seconds lagged",
+    "lag": 7,
+    "type": "db"
+  }
+}
+```
+
+Respect the `Retry-After` response header value before retrying.
+
+## Making requests
+
+<CodeGroup>
+
+```bash curl
+# Read query — GET is fine for read-only operations
+curl "https://en.wikipedia.org/w/api.php?action=query&titles=Main_Page&prop=info&format=json&formatversion=2"
+
+# Write operation — must use POST
+curl -X POST "https://en.wikipedia.org/w/api.php" \
+  -b cookies.txt -c cookies.txt \
+  --data-urlencode "action=edit" \
+  --data-urlencode "title=Sandbox" \
+  --data-urlencode "text=Hello world" \
+  --data-urlencode "summary=Test edit" \
+  --data-urlencode "token=YOUR_CSRF_TOKEN" \
+  --data "format=json&formatversion=2"
+```
+
+```python Python (requests)
+import requests
+
+S = requests.Session()
+API_URL = "https://en.wikipedia.org/w/api.php"
+
+# GET for read operations
+params = {
+    "action": "query",
+    "titles": "Main Page",
+    "prop": "info",
+    "format": "json",
+    "formatversion": "2",
+}
+response = S.get(API_URL, params=params)
+print(response.json())
+```
+
+</CodeGroup>
+
+## Error responses
+
+When a module encounters an error it returns an `errors` array (in `formatversion=2`) or a single `error` key (in version 1). HTTP status is typically 200 even for API-level errors.
+
+```json
+{
+  "errors": [
+    {
+      "code": "badtoken",
+      "text": "Invalid CSRF token.",
+      "module": "edit"
+    }
+  ]
+}
+```
+
+Warnings (non-fatal advisories) appear in a `warnings` array alongside normal results.

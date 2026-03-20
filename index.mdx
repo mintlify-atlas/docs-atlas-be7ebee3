@@ -1,97 +1,127 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "MediaWiki Developer Documentation"
+description: "The collaborative editing software that powers Wikipedia. Build extensions, customize skins, and integrate with the REST and Action APIs."
 ---
 
-## Setting up
-
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get MediaWiki running locally and write your first extension in minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Architecture Overview" icon="sitemap" href="/architecture">
+    Understand how MediaWiki's components fit together.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Extension Development" icon="puzzle-piece" href="/extensions/overview">
+    Build extensions using hooks, services, and the extension registry.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/rest/overview">
+    Integrate with the REST API and Action API.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is MediaWiki?
 
-Everything you need to create world-class documentation.
+MediaWiki is a free and open-source wiki framework written in PHP. It powers Wikipedia and thousands of other wikis across the web. As a framework, it provides:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+- A **hook system** that allows extensions to modify nearly every aspect of the application
+- A **service container** (`MediaWikiServices`) for dependency injection across all subsystems
+- A **REST API** and **Action API** for programmatic access to wiki content
+- A **ResourceLoader** for optimized JavaScript and CSS delivery
+- A **parser** that converts wikitext markup to HTML, with support for custom content models
+- A **skin system** for fully customizing the rendered HTML output
 
-## Need inspiration?
+<Info>
+  MediaWiki requires PHP 8.2 or later and supports MySQL/MariaDB, PostgreSQL, and SQLite databases.
+</Info>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+## Key developer entry points
+
+<CardGroup cols={3}>
+  <Card title="Hooks" icon="hook" href="/concepts/hooks">
+    Respond to events throughout the request lifecycle
+  </Card>
+  <Card title="Services" icon="gears" href="/concepts/services">
+    Use dependency injection via MediaWikiServices
+  </Card>
+  <Card title="Extensions" icon="boxes-stacked" href="/concepts/extensions">
+    Package your code as a distributable extension
+  </Card>
+  <Card title="Database" icon="database" href="/database/overview">
+    Query and update wiki data with the database layer
+  </Card>
+  <Card title="REST API" icon="webhook" href="/api/rest/overview">
+    Modern REST endpoints for pages, revisions, and search
+  </Card>
+  <Card title="Action API" icon="terminal" href="/api/action/overview">
+    The classic MediaWiki API for all wiki operations
+  </Card>
+</CardGroup>
+
+## Getting started paths
+
+<Tabs>
+  <Tab title="Extension Developer">
+    <Steps>
+      <Step title="Install MediaWiki">
+        Follow the [installation guide](/installation/setup) to set up a local development environment.
+      </Step>
+      <Step title="Understand the architecture">
+        Read the [architecture overview](/architecture) to understand request flow, the service container, and the hook system.
+      </Step>
+      <Step title="Create an extension">
+        Follow the [extension overview](/extensions/overview) to create your first extension with `extension.json`.
+      </Step>
+      <Step title="Register hooks">
+        Learn how to [register and implement hooks](/extensions/hooks) to respond to MediaWiki events.
+      </Step>
+      <Step title="Add services">
+        Use [dependency injection](/extensions/services) to make your extension testable and maintainable.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="API Integrator">
+    <Steps>
+      <Step title="Choose your API">
+        MediaWiki provides two APIs. The [REST API](/api/rest/overview) is modern and RESTful. The [Action API](/api/action/overview) is more feature-complete and widely used.
+      </Step>
+      <Step title="Read pages">
+        Use [GET /v1/page/{title}](/api/rest/pages) or [action=parse](/api/action/query) to retrieve page content.
+      </Step>
+      <Step title="Authenticate for writes">
+        Follow the [authentication guide](/api/action/authentication) to obtain tokens for editing and other write operations.
+      </Step>
+      <Step title="Edit content">
+        Use [action=edit](/api/action/edit) to create and modify pages programmatically.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Skin Developer">
+    <Steps>
+      <Step title="Understand skins">
+        Read the [skins overview](/skins/overview) to understand how skins render the page output.
+      </Step>
+      <Step title="Set up your skin">
+        Follow the [skin development guide](/skins/development) to create a `skin.json` and a base skin class.
+      </Step>
+      <Step title="Build templates">
+        Use [Mustache templates](/skins/templating) to define the HTML structure of your skin.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Installation requirements" icon="server" href="/installation/requirements">
+    System requirements: PHP, database, and web server setup
+  </Card>
+  <Card title="Configuration reference" icon="sliders" href="/installation/configuration">
+    All `LocalSettings.php` configuration variables
+  </Card>
+  <Card title="Maintenance scripts" icon="wrench" href="/operations/maintenance-scripts">
+    CLI scripts for database updates, cache purging, and more
+  </Card>
+  <Card title="Security" icon="shield" href="/operations/security">
+    User permissions, content security, and safe extension practices
+  </Card>
+</CardGroup>

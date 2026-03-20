@@ -1,0 +1,299 @@
+---
+title: "Hook System"
+description: "How MediaWiki's hook system works: implementing, registering, and deprecating hooks."
+---
+
+Hooks allow MediaWiki core to call extensions, and allow one extension to call another. They are the primary mechanism for extending or modifying MediaWiki behavior without modifying core code.
+
+Starting in MediaWiki 1.35, each hook called by core has an associated **interface** with a single method. To call the hook, obtain a hook runner object that implements the interface and call the method. To handle a hook event in an extension, create a handler object that implements the interface.
+
+## Hook Interfaces
+
+Each hook is defined by an interface whose name is the hook name with `Hook` appended. The method name is the hook name prefixed with `on`.
+
+```php
+interface MashHook {
+    public function onMash( $banana );
+}
+```
+
+Several legacy hooks had colons in their names, which are invalid in interface or method names. These hooks use underscores in place of colons in their interface and method names.
+
+Interfaces are typically placed in a `Hook` subnamespace relative to the caller namespace. For example, a hook in `MediaWiki\Foo` would have its interface in `MediaWiki\Foo\Hook`.
+
+## HookContainer
+
+`HookContainer` is the service responsible for maintaining the list of hook handlers and dispatching calls to them. It is not aware of hook interfaces or parameter types — that is the responsibility of hook runner classes.
+
+`HookContainer` exposes metadata methods such as `isRegistered()`, which returns whether any handlers are registered for a given hook.
+
+```php
+// Obtain HookContainer from the service locator
+$hookContainer = MediaWikiServices::getInstance()->getHookContainer();
+
+// Check if any handler is registered
+if ( $hookContainer->isRegistered( 'Mash' ) ) {
+    // ...
+}
+```
+
+When implementing a service that needs to call hooks, a `HookContainer` object should be passed to the service constructor rather than retrieved from the global service locator inside the method.
+
+<Note>
+`HookContainer` was introduced in MediaWiki 1.35. It is found at `MediaWiki\HookContainer\HookContainer` and is part of `includes/HookContainer/`.
+</Note>
+
+## Hook Runner Classes
+
+A **hook runner** is a class that implements hook interfaces, proxying calls to `HookContainer::run()`. MediaWiki core has three hook runner classes:
+
+<CardGroup cols={2}>
+  <Card title="HookRunner" icon="play">
+    Proxy methods for all hooks called by parts of core outside the API and ResourceLoader.
+  </Card>
+  <Card title="ApiHookRunner" icon="code">
+    Proxy methods for all hooks called by the Action API.
+  </Card>
+  <Card title="ResourceLoader\HookRunner" icon="puzzle-piece">
+    Hooks specific to the ResourceLoader subsystem.
+  </Card>
+  <Card title="Extension HookRunners" icon="plug">
+    Extensions that call hooks should define their own hook runner class, even for core hooks, to avoid breakage if core reorganizes calling code.
+  </Card>
+</CardGroup>
+
+To call the `Mash` hook from static code:
+
+```php
+$hookRunner = new HookRunner( MediaWikiServices::getInstance()->getHookContainer() );
+$hookRunner->onMash( $banana );
+```
+
+New service code should take `HookContainer` as a constructor parameter and construct the runner internally:
+
+```php
+class FoodService {
+    private HookRunner $hookRunner;
+
+    public function __construct( HookContainer $hookContainer ) {
+        $this->hookRunner = new HookRunner( $hookContainer );
+    }
+
+    public function mash( $banana ): void {
+        $this->hookRunner->onMash( $banana );
+    }
+}
+```
+
+## Implementing a Hook in an Extension
+
+<Steps>
+  <Step title="Define the HookHandler in extension.json">
+    Use the `HookHandlers` attribute to map a handler name to an ObjectFactory specification:
+
+    ```json
+    "HookHandlers": {
+        "main": {
+            "class": "MediaWiki\\Extension\\FoodProcessor\\HookHandler"
+        }
+    }
+    ```
+  </Step>
+  <Step title="Register the hook in extension.json">
+    Use the `Hooks` attribute to map a hook name to the handler name:
+
+    ```json
+    "Hooks": {
+        "Mash": "main"
+    }
+    ```
+
+    Or using the explicit object form:
+
+    ```json
+    "Hooks": {
+        "Mash": {
+            "handler": "main"
+        }
+    }
+    ```
+
+    <Warning>
+    In `extension.json`, use the hook name without the `Hook` suffix. The key must be `"Mash"`, not `"MashHook"`.
+    </Warning>
+  </Step>
+  <Step title="Create the handler class">
+    Define a class that implements the hook interface:
+
+    ```php
+    namespace MediaWiki\Extension\FoodProcessor;
+
+    class HookHandler implements MashHook {
+        public function onMash( $banana ) {
+            // Implementation goes here
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+### Service Dependencies in Hook Handlers
+
+The `HookHandlers` ObjectFactory specification can list services to inject into the handler's constructor:
+
+```json
+"HookHandlers": {
+    "main": {
+        "class": "MediaWiki\\Extension\\FoodProcessor\\HookHandler",
+        "services": [ "ReadOnlyMode" ]
+    }
+}
+```
+
+<Warning>
+Some services have expensive constructors. Requesting them in handlers for frequently-called hooks can damage performance. Additionally, some services may not be safe to construct from within a hook call. The safest pattern is to use a separate handler for each hook and inject only the services that hook needs.
+</Warning>
+
+If a hook is called with the `noServices` option, service injection is disabled. Specifying services for such a hook throws an exception at call time.
+
+## Returning and Aborting
+
+Hook handlers communicate results back to callers primarily by modifying parameters passed by reference.
+
+<Tabs>
+  <Tab title="Continuing execution">
+    Return `true` or return nothing (implicitly `null`) to allow `HookContainer` to continue calling any remaining handlers:
+
+    ```php
+    public function onMash( $banana ) {
+        // Do something
+        return true; // or just return;
+    }
+    ```
+  </Tab>
+  <Tab title="Aborting execution">
+    Return `false` to stop iterating through handlers immediately. `HookContainer::run()` will return `false` to the caller:
+
+    ```php
+    public function onMash( $banana ) {
+        // Prevent further processing
+        return false;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+Aborting is properly used to enforce a convention that only one extension may handle a given hook call, or as a generic signal that the caller should stop performing an action. Most hook callers do not check the return value from `HookContainer::run()`. Returning `false` from a handler of such hooks only breaks other extensions.
+</Note>
+
+Some hooks are declared **not abortable** via `[ "abortable" => false ]` in the `$options` parameter to `HookContainer::run()`. Returning `false` from a handler for a non-abortable hook throws an exception.
+
+Extensions registered first in `LocalSettings.php` are called first and thus have the first opportunity to abort. In the new hook system, legacy-registered handlers are called before new-style handlers.
+
+## The New Hook System vs. Legacy Function-Based Hooks
+
+<Tabs>
+  <Tab title="New system (1.35+)">
+    Handler classes implement typed interfaces and are registered via `HookHandlers` in `extension.json`. Services can be injected via ObjectFactory. Handlers are type-safe and testable in isolation.
+
+    ```json
+    "HookHandlers": {
+        "main": {
+            "class": "MediaWiki\\Extension\\FoodProcessor\\HookHandler"
+        }
+    },
+    "Hooks": {
+        "Mash": "main"
+    }
+    ```
+  </Tab>
+  <Tab title="Legacy system">
+    Handlers were registered as global function names or static method strings directly in `$wgHooks` or `extension.json`:
+
+    ```php
+    // In LocalSettings.php (legacy)
+    $wgHooks['Mash'][] = 'MyExtension::onMash';
+    ```
+
+    ```json
+    // In extension.json (legacy style)
+    "Hooks": {
+        "Mash": "MediaWiki\\Extension\\FoodProcessor\\Hooks::onMash"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+In the new system, legacy-registered handlers are always called before new-style handlers.
+
+## Defining a New Hook
+
+To define a new hook in core or an extension:
+
+1. Create a hook interface in a `Hook` subnamespace relative to the calling code's namespace.
+2. Add an implementation (proxy method) to the relevant `HookRunner` class.
+
+For extensions, hook interfaces can be placed anywhere that is autoloaded, but following the same `Hook` subnamespace convention is recommended.
+
+## Hook Deprecation
+
+Core hooks are deprecated by registering them in the `DeprecatedHooks` class. Extensions deprecate hooks they define using the `DeprecatedHooks` attribute in `extension.json`:
+
+```json
+"DeprecatedHooks": {
+    "Mash": {
+        "deprecatedVersion": "2.0",
+        "component": "FoodProcessor"
+    }
+}
+```
+
+If `component` is omitted, it defaults to the extension name. The hook interface should also be annotated with `@deprecated` in its doc comment — on the interface itself, not the method, so that implementing the interface is deprecated (not just calling it).
+
+### Call Filtering
+
+Deprecating a hook activates **call filtering**. Extensions opt in by **acknowledging** deprecation with the `deprecated` flag:
+
+```json
+"Hooks": {
+    "Mash": {
+        "handler": "main",
+        "deprecated": true
+    }
+}
+```
+
+When deprecation is acknowledged:
+- If MediaWiki knows the hook is deprecated, the handler is **not called** (filtered).
+- If MediaWiki does not yet list the hook as deprecated, the handler **is called** anyway.
+
+This provides both forward and backward compatibility across MediaWiki and extension version combinations.
+
+<Accordion title="Call filtering example">
+Suppose `Mash` is deprecated in MediaWiki 2.0 and replaced by `Slice`. In FoodProcessor 1.0 only `Mash` is handled. In FoodProcessor 2.0 both hooks are handled, and deprecation of `Mash` is acknowledged.
+
+| MediaWiki | FoodProcessor | Result |
+|---|---|---|
+| 2.0 | 1.0 | `onMash` is called but raises a deprecation warning |
+| 2.0 | 2.0 | `onMash` is filtered; `onSlice` is called |
+| 1.0 | 2.0 | `onMash` is called (not yet deprecated in core); `onSlice` is not called (does not yet exist) |
+</Accordion>
+
+### Silent Deprecation
+
+To deprecate a hook without raising warnings (soft deprecation), add the `"silent": true` flag. Call filtering is still activated, which simplifies migrating extensions to the new hook.
+
+```json
+"DeprecatedHooks": {
+    "Mash": {
+        "deprecatedVersion": "2.0",
+        "component": "FoodProcessor",
+        "silent": true
+    }
+}
+```
+
+<Tip>
+Even with silent deprecation, add `@deprecated` to the hook interface. This marks the interface as deprecated for implementors during static analysis, without generating a runtime warning.
+</Tip>

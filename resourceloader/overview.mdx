@@ -1,0 +1,188 @@
+---
+title: "ResourceLoader Overview"
+description: "How ResourceLoader delivers optimized JavaScript and CSS to wiki pages."
+---
+
+ResourceLoader is MediaWiki's system for delivering JavaScript and CSS to the browser. Rather than including scripts and stylesheets directly in page HTML, ResourceLoader groups resources into named **modules**, resolves dependencies, and delivers them in optimized batches through a single `load.php` endpoint.
+
+> ResourceLoader is a loading system for JavaScript and CSS resources.
+> — `ResourceLoader.php` docblock
+
+## What ResourceLoader does
+
+<CardGroup cols={2}>
+  <Card title="Dependency resolution" icon="git-branch">
+    Modules declare their dependencies. ResourceLoader builds a dependency graph and ensures modules load in the correct order, with deduplication.
+  </Card>
+  <Card title="Batching" icon="package">
+    Multiple modules are combined into a single HTTP request, reducing the number of round-trips needed to load a page.
+  </Card>
+  <Card title="LESS compilation" icon="palette">
+    CSS files may be written in LESS. ResourceLoader compiles LESS to CSS server-side using `wikimedia/less.php` before delivery.
+  </Card>
+  <Card title="Minification" icon="minimize-2">
+    JavaScript is minified using `wikimedia/minify` (JavaScriptMinifier). CSS is minified using CSSMin.
+  </Card>
+  <Card title="Cache versioning" icon="clock">
+    Each module has a version hash. Browsers cache aggressively via long `max-age` headers. When a module changes, its hash changes and the browser fetches the new version.
+  </Card>
+  <Card title="RTL support" icon="arrow-left-right">
+    CSS is automatically flipped for right-to-left languages using CSSJanus, so extensions don't need to maintain separate LTR/RTL stylesheets.
+  </Card>
+</CardGroup>
+
+## The load.php entry point
+
+All resource requests pass through `load.php` (handled by `ResourceLoaderEntryPoint`). A typical request URL looks like:
+
+```
+https://example.org/w/load.php?lang=en&modules=jquery%7Cmediawiki.base&only=scripts&skin=vector&version=abc123
+```
+
+Key query parameters:
+
+| Parameter | Description |
+|---|---|
+| `modules` | Pipe-separated list of module names to load |
+| `lang` | User language code |
+| `skin` | Active skin name |
+| `only` | `scripts`, `styles`, or omitted (combined) |
+| `version` | Version hash for cache busting |
+| `debug` | `true` to serve unminified code |
+
+## Module system
+
+Resources are organized into named modules. A module is a named collection of scripts, styles, messages, templates, and declared dependencies. Modules are defined in `extension.json` (for extensions), `skin.json` (for skins), or in `resources/Resources.php` (for core).
+
+For example, core defines the `jquery` module as:
+
+```php
+'jquery' => [
+    'scripts' => [
+        'resources/lib/jquery/jquery.js'
+    ],
+],
+```
+
+And `mediawiki.base` — the foundation of the `mw` global — as:
+
+```php
+'mediawiki.base' => [
+    'localBasePath'  => MW_INSTALL_PATH . '/resources/src/mediawiki.base',
+    'remoteBasePath' => "$wgResourceBasePath/resources/src/mediawiki.base",
+    'packageFiles'   => [
+        'mediawiki.base.js',
+        'log.js',
+        'errorLogger.js',
+        [ 'name' => 'config.json', 'callback' => ResourceLoader::getSiteConfigSettings( ... ) ],
+        [ 'name' => 'user.json',   'callback' => static function ( Context $context ) { ... } ],
+    ],
+    'dependencies' => 'jquery',
+],
+```
+
+## Module loading
+
+Modules are loaded client-side via `mw.loader`. The startup module bootstraps the loader and registers all known module names, version hashes, and dependency graphs in a compact format.
+
+### mw.loader.using()
+
+`mw.loader.using()` returns a promise that resolves when all requested modules (and their transitive dependencies) are loaded and ready:
+
+```javascript
+mw.loader.using( 'mediawiki.api' ).then( function () {
+    var api = new mw.Api();
+    api.get( { action: 'query', meta: 'siteinfo' } ).then( function ( data ) {
+        console.log( data );
+    } );
+} );
+```
+
+Multiple modules can be requested together:
+
+```javascript
+mw.loader.using( [ 'mediawiki.api', 'mediawiki.notification' ] ).then( function () {
+    // Both modules are now ready
+} );
+```
+
+### mw.loader.load()
+
+`mw.loader.load()` is a fire-and-forget version that starts loading without returning a promise:
+
+```javascript
+// Load a module without waiting for it
+mw.loader.load( 'ext.myExtension.feature' );
+
+// Load a URL directly (e.g., a standalone script)
+mw.loader.load( 'https://example.org/script.js', 'text/javascript' );
+```
+
+## Build system
+
+### LESS compilation
+
+Stylesheet files can use LESS syntax. ResourceLoader compiles LESS using `wikimedia/less.php`. Shared variables and mixins from `mediawiki.less/` are available to all modules:
+
+```less
+// Import shared MediaWiki LESS variables and mixins
+@import 'mediawiki.mixins.less';
+
+.my-extension-widget {
+    color: @color-base;
+    border: @border-base;
+    .hbox();
+}
+```
+
+### Minification
+
+In production, JavaScript is minified with `JavaScriptMinifier` and CSS with `CSSMin`. Both tools are part of the `wikimedia/minify` library.
+
+The `CACHE_VERSION` constant in `ResourceLoader` is bumped whenever the minification output changes in a way that would require cache invalidation:
+
+```php
+class ResourceLoader implements LoggerAwareInterface {
+    /** @var int */
+    public const CACHE_VERSION = 9;
+}
+```
+
+## Debug mode
+
+ResourceLoader has a debug mode that serves unminified, unmerged files with source maps. Enable it for a single request by appending `?debug=true` to any wiki page URL, or set it globally:
+
+```php
+// LocalSettings.php
+$wgResourceLoaderDebug = true;
+```
+
+In debug mode:
+- JavaScript is served without minification.
+- Each script file is loaded as a separate request (`debugRaw` mode).
+- LESS files are still compiled server-side.
+- Source maps are included where available.
+
+## Module versioning and caching
+
+Each module has a **version hash** derived from the content of its files, configuration, and registered messages. When any input to a module changes, its hash changes.
+
+ResourceLoader sends `Cache-Control: max-age=2592000` (30 days) for versioned responses. Unversioned requests (without a `version` parameter) receive `max-age=5` to allow recovery from errors.
+
+```php
+// Fallback max-age for unversioned or error responses
+private const MAXAGE_RECOVER = 60;
+```
+
+The startup module itself is lightly cached (short `max-age`) because it contains the version hashes of all other modules and must stay current.
+
+## Module groups
+
+Modules belong to groups that control how they are batched and which pages they load on:
+
+| Group constant | Value | Description |
+|---|---|---|
+| `Module::GROUP_SITE` | `site` | MediaWiki namespace JS/CSS (MediaWiki:Common.js) |
+| `Module::GROUP_USER` | `user` | Per-user JS/CSS (User:Name/common.js) |
+| `Module::GROUP_PRIVATE` | `private` | Loaded inline, not cacheable |
+| `Module::GROUP_NOSCRIPT` | `noscript` | Loaded in `<noscript>` blocks |

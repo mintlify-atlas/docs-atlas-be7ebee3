@@ -1,0 +1,213 @@
+---
+title: "Parser Overview"
+description: "How the MediaWiki parser converts wikitext to HTML, and how to extend it."
+---
+
+The MediaWiki parser is the engine that transforms wikitext markup into the HTML that browsers render. Every page view that displays wikitext content passes through the parser. Understanding its architecture is essential for building extensions that interact with page content.
+
+## What the parser does
+
+The parser accepts wikitext — the `[[link]]`, `'''bold'''`, `{{template}}` syntax that editors write — and produces HTML output along with metadata about the page. Its primary entry point is `Parser::parse()`, which returns a `ParserOutput` object containing both the rendered HTML and all associated metadata.
+
+From the `Parser.php` docblock:
+
+> PHP Parser — Processes wiki markup (which uses a more user-friendly syntax, such as `[[link]]` for making links), and provides a one-way transformation of that wiki markup into (X)HTML output / markup (which in turn the browser understands, and can display).
+
+The seven main entry points into `Parser` are:
+
+| Method | Purpose |
+|---|---|
+| `Parser::parse()` | Produces HTML output from wikitext |
+| `Parser::preSaveTransform()` | Produces altered wikitext before saving |
+| `Parser::preprocess()` | Removes HTML comments and expands templates |
+| `Parser::cleanSig()` | Cleans a signature before saving to preferences |
+| `Parser::getSection()` | Returns the content of a section for section editing |
+| `Parser::replaceSection()` | Replaces a section by number inside an article |
+| `Parser::getPreloadText()` | Removes `<noinclude>` sections and `<includeonly>` tags |
+
+## Parser stages
+
+Parsing wikitext happens in distinct stages:
+
+<Steps>
+  <Step title="Preprocessing">
+    The `Preprocessor_Hash` class handles the first pass. It strips HTML comments, expands templates by recursively fetching and substituting their content, processes `<noinclude>` and `<includeonly>` tags, and resolves parser function calls. The result is a preprocessed tree ready for the main parse.
+  </Step>
+
+  <Step title="Parsing">
+    The main parse pass runs `Parser::parse()`. It processes the preprocessed tree, handles wiki markup (bold, italics, links, headings, tables), invokes tag hooks for custom tags like `<ref>` or `<syntaxhighlight>`, and resolves magic words and variables.
+  </Step>
+
+  <Step title="Post-processing">
+    After the initial HTML is produced, post-processing runs. This includes Tidy/Remex HTML cleanup via `MWTidy`, link resolution via `LinkHolderArray`, and applying any output transformations registered by extensions.
+  </Step>
+</Steps>
+
+## ParserOutput: the result of parsing
+
+`ParserOutput` is the object returned by the parser. It combines the rendered HTML with metadata collected during parsing:
+
+```php
+// ParserOutput is a rendering of a Content object or a message.
+// It combines HTML rendering with metadata: categories, links,
+// page properties, and extension data.
+class ParserOutput extends CacheTime implements ContentMetadataCollector
+```
+
+Key data stored in a `ParserOutput`:
+
+<CardGroup cols={2}>
+  <Card title="HTML content" icon="code">
+    The rendered HTML of the page, accessible via `getContentHolderText()`.
+  </Card>
+  <Card title="Categories" icon="tag">
+    Categories the page belongs to, collected from `[[Category:...]]` links during parsing.
+  </Card>
+  <Card title="Internal links" icon="link">
+    All links to other wiki pages found in the content, used to maintain the `pagelinks` table.
+  </Card>
+  <Card title="Page properties" icon="settings">
+    Arbitrary key-value data set by templates and parser functions via `{{DISPLAYTITLE:}}`, `__NOINDEX__`, etc.
+  </Card>
+  <Card title="Templates used" icon="layers">
+    Every template transcluded during parsing, enabling cache invalidation when templates change.
+  </Card>
+  <Card title="Extension data" icon="puzzle">
+    Arbitrary data stored by extensions using `setExtensionData()` / `getExtensionData()`.
+  </Card>
+</CardGroup>
+
+`ParserOutput` objects for page revisions are created by `ParserOutputAccess`, which automatically caches them via `ParserCache`.
+
+## Parsoid: the new parser
+
+Parsoid is a rewrite of the MediaWiki parser that produces semantically rich HTML+RDFa output rather than the ad-hoc HTML produced by the PHP parser. It was developed to support the VisualEditor and is now integrated into MediaWiki core as `ParsoidParser`.
+
+```php
+// ParsoidParser — introduced in MediaWiki 1.41
+class ParsoidParser /* eventually this will extend \Parser */ {
+    public function __construct(
+        private Parsoid $parsoid,
+        private readonly PageConfigFactory $pageConfigFactory,
+        private readonly LanguageConverterFactory $languageConverterFactory,
+        private readonly DataAccess $dataAccess,
+    ) {}
+}
+```
+
+Parsoid output is styled by the `mediawiki.skinning.content.parsoid` ResourceLoader module:
+
+```php
+'mediawiki.skinning.content.parsoid' => [
+    // Style Parsoid HTML+RDFa output consistent with wikitext from PHP parser
+    // with the interface.css styles; skinStyles should be used if your
+    // skin over-rides common content styling.
+    'skinStyles' => [
+        'default' => [
+            'resources/src/mediawiki.skinning/content.parsoid.less',
+            'resources/src/mediawiki.skinning/content.media-common.less',
+            'resources/src/mediawiki.skinning/content.media-screen.less',
+        ],
+    ],
+],
+```
+
+<Note>
+Parsoid is declared `@unstable since 1.41` while the long-term plan (tracked in T236809) for full integration is completed. For new extensions, prefer the existing PHP parser hooks while Parsoid stabilizes.
+</Note>
+
+## Parser hooks for extending the parser
+
+Extensions extend the parser through two types of hooks registered during `ParserFirstCallInit`.
+
+### Tag hooks
+
+Tag hooks handle custom XML-style tags. The core parser registers its own tags in `CoreTagHooks::register()`:
+
+```php
+public static function register( Parser $parser, ServiceOptions $options ) {
+    $parser->setHook( 'pre',        [ self::class, 'pre' ] );
+    $parser->setHook( 'nowiki',     [ self::class, 'nowiki' ] );
+    $parser->setHook( 'gallery',    [ self::class, 'gallery' ] );
+    $parser->setHook( 'indicator',  [ self::class, 'indicator' ] );
+    $parser->setHook( 'langconvert',[ self::class, 'langconvert' ] );
+    if ( $rawHtml ) {
+        $parser->setHook( 'html', [ self::class, 'html' ] );
+    }
+}
+```
+
+To register a custom tag in an extension:
+
+```php
+// In your hook handler class
+public static function onParserFirstCallInit( Parser $parser ): void {
+    $parser->setHook( 'mywidget', [ self::class, 'renderMyWidget' ] );
+}
+
+public static function renderMyWidget(
+    ?string $content,
+    array $attribs,
+    Parser $parser,
+    PPFrame $frame
+): string {
+    $id = htmlspecialchars( $attribs['id'] ?? '' );
+    $content = $parser->recursiveTagParse( $content ?? '', $frame );
+    return "<div class=\"mywidget\" id=\"$id\">$content</div>";
+}
+```
+
+### Function hooks
+
+Function hooks implement parser functions called as `{{#myfunction: arg1 | arg2 }}`. They are registered with `Parser::setFunctionHook()`:
+
+```php
+public static function onParserFirstCallInit( Parser $parser ): void {
+    $parser->setFunctionHook(
+        'myfunction',
+        [ self::class, 'expandMyFunction' ]
+    );
+}
+
+public static function expandMyFunction(
+    Parser $parser,
+    string $arg1 = '',
+    string $arg2 = ''
+): string {
+    return htmlspecialchars( $arg1 ) . ' / ' . htmlspecialchars( $arg2 );
+}
+```
+
+In `extension.json`:
+
+```json
+{
+    "Hooks": {
+        "ParserFirstCallInit": "MyExtension\\Hooks::onParserFirstCallInit"
+    }
+}
+```
+
+## ParserCache
+
+The `ParserCache` stores `ParserOutput` objects to avoid reparsing pages on every request. It uses a two-tiered cache backed by `BagOStuff`:
+
+```
+Tier 1: keyed by page ID → ParserCacheMetadata
+         (lists which ParserOptions affected this parse)
+
+Tier 2: keyed by page ID + relevant option values → ParserOutput
+```
+
+The cache varies on `ParserOptions` that actually influenced the output during a given parse. For example, if only `dateformat` and `userlang` were accessed, only those values are included in the cache key. A lookup with the same `dateformat` and `userlang` hits the same entry regardless of other options.
+
+```php
+// Constants for cache staleness policy
+public const USE_CURRENT_ONLY = 0;  // Only fresh data
+public const USE_EXPIRED      = 1;  // Expired data if fresh unavailable
+public const USE_OUTDATED     = 2;  // Expired or wrong-revision data
+```
+
+<Tip>
+To disable caching for a specific parse (for example, when rendering a page with user-specific content), call `$parser->getOutput()->updateCacheExpiry(0)` inside your hook. This marks the output as uncacheable.
+</Tip>

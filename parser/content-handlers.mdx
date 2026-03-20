@@ -1,0 +1,280 @@
+---
+title: "Content Handlers"
+description: "Creating custom content models with ContentHandler for non-wikitext pages."
+---
+
+The ContentHandler facility, introduced in MediaWiki 1.21, allows wiki pages to store and render arbitrary content types instead of treating all pages as wikitext. Each content type is identified by a **content model** — a unique string ID. MediaWiki ships with built-in models and allows extensions to register their own.
+
+## Content models
+
+Every page in MediaWiki has a content model that determines how its content is stored, rendered, edited, compared, and serialized.
+
+### Built-in content models
+
+| Constant | ID string | Description |
+|---|---|---|
+| `CONTENT_MODEL_WIKITEXT` | `wikitext` | Standard wiki markup |
+| `CONTENT_MODEL_JAVASCRIPT` | `javascript` | User-provided JavaScript |
+| `CONTENT_MODEL_CSS` | `css` | User-provided CSS |
+| `CONTENT_MODEL_JSON` | `json` | JSON data, used by extensions |
+| `CONTENT_MODEL_TEXT` | `text` | Plain text |
+
+In PHP, always use the `CONTENT_MODEL_XXX` constants rather than raw strings.
+
+### How a page's model is determined
+
+The model for a page is resolved in this order:
+
+1. `$wgNamespaceContentModels` — specifies a default model for an entire namespace.
+2. The `ContentHandlerDefaultModelFor` hook — allows overriding the model for specific pages.
+3. Pages in `NS_MEDIAWIKI` and `NS_USER` default to `css` or `javascript` if they end in `.css` or `.js`.
+4. All other pages default to `wikitext`.
+
+To retrieve the model for a page:
+
+```php
+$model = $title->getContentModel();
+// or, for a specific revision slot:
+$model = $slotRecord->getModel();
+```
+
+<Note>
+Revisions of a page are not guaranteed to share the same content model. Use `SlotRecord::getModel()` to get the model for a specific revision's slot.
+</Note>
+
+## Architecture
+
+The ContentHandler system uses two class hierarchies:
+
+<CardGroup cols={2}>
+  <Card title="Content interface" icon="file">
+    `Content` (and `AbstractContent` base class) — represents the actual content of a specific page revision. Provides methods like `getParserOutput()`, `diff()`, `isValid()`.
+  </Card>
+  <Card title="ContentHandler class" icon="settings">
+    `ContentHandler` — a singleton that provides functionality for a content model without acting on specific content. Acts as a factory for `Content` objects.
+  </Card>
+</CardGroup>
+
+The `ContentHandler` for a given model can be retrieved via:
+
+```php
+$handler = ContentHandlerFactory::getContentHandler( $modelId );
+// Or via Title/WikiPage:
+$handler = $title->getContentHandler();
+$handler = $wikiPage->getContentHandler();
+```
+
+`ContentHandler` objects are singletons. Use `ContentHandler::makeEmptyContent()` and `ContentHandler::unserializeContent()` to create `Content` objects. However, the preferred approach is:
+
+```php
+// Preferred: get content from a WikiPage or RevisionRecord
+$content = $wikiPage->getContent();
+$content = $revisionRecord->getContent( SlotRecord::MAIN );
+```
+
+## Content serialization
+
+Each content model supports one or more serialization formats identified by MIME-type strings. Use the `CONTENT_FORMAT_XXX` constants in PHP.
+
+### Built-in serialization formats
+
+| Constant | MIME type | Usage |
+|---|---|---|
+| `CONTENT_FORMAT_WIKITEXT` | `text/x-wiki` | Wikitext |
+| `CONTENT_FORMAT_JAVASCRIPT` | `text/javascript` | JavaScript pages |
+| `CONTENT_FORMAT_CSS` | `text/css` | CSS pages |
+| `CONTENT_FORMAT_TEXT` | `text/plain` | Plain text |
+| `CONTENT_FORMAT_HTML` | `text/html` | Future use |
+| `CONTENT_FORMAT_JSON` | `application/json` | JSON content |
+| `CONTENT_FORMAT_XML` | `application/xml` | XML content |
+| `CONTENT_FORMAT_SERIALIZED` | `application/vnd.php.serialized` | PHP serialized |
+
+Serialization methods:
+
+```php
+// Serialize to a specific format
+$serialized = $handler->serializeContent( $content, CONTENT_FORMAT_JSON );
+
+// Get all formats supported by a model
+$formats = $handler->getSupportedFormats();
+
+// Deserialize from stored data
+$content = $handler->unserializeContent( $data, $format );
+```
+
+<Warning>
+When using the Action API (`action=edit`, `action=parse`, `action=query&prop=revisions`) to access page content, always specify both the content model and format explicitly. Without this information, interpretation of returned content is unreliable.
+</Warning>
+
+## Implementing a custom ContentHandler
+
+To add support for a new content type, subclass `ContentHandler` and implement the required methods:
+
+```php
+namespace MyExtension;
+
+use MediaWiki\Content\AbstractContent;
+use MediaWiki\Content\ContentHandler;
+use MediaWiki\Content\JsonContent;
+use MediaWiki\Parser\ParserOutput;
+use MediaWiki\Parser\ParserOptions;
+use MediaWiki\Page\PageReference;
+
+class MyDataContentHandler extends ContentHandler {
+
+    public function __construct() {
+        // Register the model ID and supported serialization formats
+        parent::__construct(
+            'myextension-mydata',
+            [ CONTENT_FORMAT_JSON ]
+        );
+    }
+
+    /**
+     * Deserialize stored content into a Content object.
+     */
+    public function unserializeContent(
+        string $text,
+        ?string $format = null
+    ): MyDataContent {
+        $this->checkFormat( $format );
+        return new MyDataContent( $text );
+    }
+
+    /**
+     * Create an empty Content object for this model.
+     */
+    public function makeEmptyContent(): MyDataContent {
+        return new MyDataContent( '{}' );
+    }
+}
+```
+
+Then implement the `Content` class:
+
+```php
+class MyDataContent extends AbstractContent {
+
+    private array $data;
+
+    public function __construct( string $text ) {
+        parent::__construct( 'myextension-mydata' );
+        $this->data = json_decode( $text, true ) ?? [];
+    }
+
+    public function serialize( ?string $format = null ): string {
+        return json_encode( $this->data, JSON_PRETTY_PRINT );
+    }
+
+    public function isValid(): bool {
+        return is_array( $this->data );
+    }
+
+    public function isEmpty(): bool {
+        return $this->data === [];
+    }
+
+    public function equals( ?Content $that = null ): bool {
+        if ( !( $that instanceof MyDataContent ) ) {
+            return false;
+        }
+        return $this->data === $that->data;
+    }
+
+    public function copy(): self {
+        return new self( $this->serialize() );
+    }
+
+    public function getSize(): int {
+        return strlen( $this->serialize() );
+    }
+
+    /**
+     * Render this content to a ParserOutput.
+     * Use Content::getParserOutput() — do NOT access the parser directly.
+     */
+    public function getParserOutput(
+        PageReference $page,
+        int $revId = 0,
+        ?ParserOptions $options = null,
+        bool $generateHtml = true
+    ): ParserOutput {
+        $output = new ParserOutput();
+        if ( $generateHtml ) {
+            $html = '<pre class="mydata-content">';
+            $html .= htmlspecialchars( json_encode( $this->data, JSON_PRETTY_PRINT ) );
+            $html .= '</pre>';
+            $output->setRawText( $html );
+        }
+        return $output;
+    }
+}
+```
+
+<Tip>
+For rendering page content, always use `Content::getParserOutput()` rather than accessing the parser directly. Use `WikiPage::makeParserOptions()` to construct appropriate `ParserOptions`.
+</Tip>
+
+## Registering a content handler in extension.json
+
+Register your handler using the `ContentHandlers` key in `extension.json`:
+
+```json
+{
+    "name": "MyExtension",
+    "ContentHandlers": {
+        "myextension-mydata": "MyExtension\\MyDataContentHandler"
+    },
+    "namespaces": [
+        {
+            "id": 2500,
+            "constant": "NS_MYDATA",
+            "name": "MyData",
+            "content": true,
+            "defaultcontentmodel": "myextension-mydata"
+        }
+    ]
+}
+```
+
+Alternatively, you can set the default model for a namespace using `$wgNamespaceContentModels` in `LocalSettings.php`:
+
+```php
+$wgNamespaceContentModels[NS_MYDATA] = 'myextension-mydata';
+```
+
+Or use the `ContentHandlerDefaultModelFor` hook to override the model for individual pages:
+
+```php
+public static function onContentHandlerDefaultModelFor(
+    Title $title,
+    string &$model
+): bool {
+    if ( $title->getNamespace() === NS_MYDATA ) {
+        $model = 'myextension-mydata';
+        return false; // Stop further processing
+    }
+    return true;
+}
+```
+
+## Custom action handlers
+
+`ContentHandler::getActionOverrides()` allows a content handler to replace the default edit, view, or history actions with custom implementations. This is similar to `WikiPage::getActionOverrides()`:
+
+```php
+public function getActionOverrides(): array {
+    return [
+        'edit' => MyDataEditAction::class,
+        'view' => MyDataViewAction::class,
+    ];
+}
+```
+
+## Database storage
+
+Content is stored using the same mechanism as wikitext. Non-text content is serialized first. Each revision records its `content_model` and `content_format` in the revision table — but only if they differ from the page's default (the defaults are stored as `NULL` to save space).
+
+<Note>
+JavaScript and CSS pages are no longer parsed as wikitext. Links and category tags inside `.js` and `.css` pages do not create actual page links or category memberships.
+</Note>

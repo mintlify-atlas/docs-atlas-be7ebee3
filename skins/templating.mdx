@@ -1,0 +1,392 @@
+---
+title: "Skin Templating"
+description: "Using Mustache templates in MediaWiki skins to define page structure."
+---
+
+MediaWiki uses [Mustache](https://mustache.github.io/) for skin templating via the `SkinMustache` base class. Templates receive a structured data object from `getTemplateData()` and render it into HTML. The template engine is implemented using [LightnCandy](https://github.com/zordius/lightncandy), a PHP Mustache/Handlebars compiler.
+
+## The SkinMustache base class
+
+`SkinMustache` (in `MediaWiki\Skin\SkinMustache`) extends `SkinTemplate` and provides Mustache rendering. It uses `TemplateParser` to compile and execute `.mustache` files.
+
+```php includes/Skin/SkinMustache.php
+class SkinMustache extends SkinTemplate {
+
+    protected function getTemplateParser(): TemplateParser {
+        if ( $this->templateParser === null ) {
+            $this->templateParser = new TemplateParser(
+                $this->options['templateDirectory']
+            );
+            // Enable recursive partials for table of contents rendering
+            $this->templateParser->enableRecursivePartials( true );
+        }
+        return $this->templateParser;
+    }
+
+    public function generateHTML(): string {
+        $this->setupTemplateContext();
+        $tp = $this->getTemplateParser();
+        $template = $this->options['template'] ?? 'skin';
+        $data = $this->getTemplateData();
+        return $tp->processTemplate( $template, $data );
+    }
+}
+```
+
+The `templateDirectory` option in `skin.json` points to the directory containing `.mustache` files. The `template` option (default: `'skin'`) specifies the root template name, which resolves to `skin.mustache` in that directory.
+
+## A minimal skin template
+
+The following is a complete, minimal `skin.mustache` based on the built-in fallback skin:
+
+```mustache resources/templates/skins/fallback/skin.mustache
+{{{html-fallback-warning}}}
+{{#data-search-box}}
+<form action="{{form-action}}">
+    <input type="hidden" name="title" value="{{page-title}}">
+    <h3>
+        <label for="searchInput">{{msg-search}}</label>
+    </h3>
+    {{{html-input}}}
+    {{{html-button-search-fallback}}}
+    {{{html-button-search}}}
+</form>
+{{/data-search-box}}
+<div class="mw-body" role="main">
+    <h1 id="firstHeading">{{{html-title}}}</h1>
+    {{{html-subtitle}}}
+    <div class="mw-body-content">
+        {{{html-body-content}}}
+        {{{html-categories}}}
+    </div>
+</div>
+```
+
+A more complete skin template with logo, footer, and navigation (from the authentication-popup skin):
+
+```mustache resources/templates/skins/authentication-popup/skin.mustache
+<div class="mw-body">
+    <header>
+        {{#data-logos}}
+            <span class="mw-logo-container">
+                {{#wordmark}}
+                <img class="mw-logo-wordmark" alt="{{msg-sitetitle}}" src="{{src}}" style="{{style}}">
+                {{/wordmark}}
+                {{^wordmark}}
+                <strong class="mw-logo-wordmark">{{msg-sitetitle}}</strong>
+                {{/wordmark}}
+            </span>
+        {{/data-logos}}
+    </header>
+
+    <h1>{{{html-title}}}</h1>
+
+    <main>
+        {{{html-body-content}}}
+    </main>
+
+    <footer>
+        {{#data-footer}}
+            <ul>
+                {{#data-info}}
+                {{#array-items}}<li>{{{html}}}</li>{{/array-items}}
+                {{/data-info}}
+
+                {{#data-places}}
+                {{#array-items}}<li>{{{html}}}</li>{{/array-items}}
+                {{/data-places}}
+
+                {{#data-icons}}
+                {{#array-items}}<li>{{{html}}}</li>{{/array-items}}
+                {{/data-icons}}
+            </ul>
+        {{/data-footer}}
+    </footer>
+</div>
+```
+
+## Mustache syntax in MediaWiki
+
+MediaWiki uses standard Mustache with LightnCandy's `FLAG_MUSTACHELOOKUP` flag enabled.
+
+<Tabs>
+  <Tab title="Variables">
+    Use `{{variable}}` for HTML-escaped output and `{{{variable}}}` for raw (unescaped) HTML:
+
+    ```mustache
+    <!-- Escaped: safe for user-supplied text -->
+    <title>{{html-title}}</title>
+
+    <!-- Unescaped: for pre-built HTML strings from MediaWiki -->
+    <div class="mw-body-content">{{{html-body-content}}}</div>
+    ```
+
+    All `html-*` keys from `getTemplateData()` contain pre-sanitised HTML and should be rendered with triple braces `{{{ }}}`. Plain text values should use double braces `{{ }}`.
+  </Tab>
+  <Tab title="Sections">
+    `{{#key}}...{{/key}}` renders the block if the value is truthy. For arrays, it iterates:
+
+    ```mustache
+    {{#is-anon}}
+    <a href="{{link-login}}">Log in</a>
+    {{/is-anon}}
+
+    {{#data-footer}}
+        {{#array-items}}<li>{{{html}}}</li>{{/array-items}}
+    {{/data-footer}}
+    ```
+  </Tab>
+  <Tab title="Inverted sections">
+    `{{^key}}...{{/key}}` renders the block if the value is falsy or the array is empty:
+
+    ```mustache
+    {{^wordmark}}
+    <strong class="mw-logo-wordmark">{{msg-sitetitle}}</strong>
+    {{/wordmark}}
+    ```
+  </Tab>
+  <Tab title="Partials">
+    `{{> partialName}}` includes another `.mustache` file from the same `templateDirectory`:
+
+    ```mustache
+    <nav>
+        {{> navigation}}
+    </nav>
+    <main>
+        {{> content}}
+    </main>
+    ```
+
+    Recursive partials are enabled in `SkinMustache` for table of contents rendering. The partial file must be in the same directory as the root template.
+  </Tab>
+</Tabs>
+
+## Template data properties
+
+`SkinMustache::getTemplateData()` assembles data from `Skin::getTemplateData()` (via `SkinTemplate`) and adds Mustache-specific keys. Data keys follow a consistent naming convention:
+
+| Prefix | Type | Example |
+|---|---|---|
+| `html-` | Raw HTML string | `html-body-content`, `html-title` |
+| `data-` | Nested data object | `data-footer`, `data-logos` |
+| `array-` | Plain array | `array-indicators`, `array-items` |
+| `is-` / `has-` | Boolean | `is-anon`, `is-article`, `is-mainpage` |
+| `msg-` | Translated message string | `msg-search`, `msg-sitetitle` |
+| `link-` | URL string | `link-mainpage` |
+
+### Core template data keys
+
+These are available in all `SkinMustache`-based templates:
+
+```php includes/Skin/SkinMustache.php
+$data = parent::getTemplateData() + [
+    // Array objects
+    'array-indicators' => $this->getIndicatorsData( $out->getIndicators() ),
+    // HTML strings
+    'html-site-notice'              => $this->getSiteNotice() ?: null,
+    'html-user-message'             => $newTalksHtml ? ... : null,
+    'html-subtitle'                 => $this->prepareSubtitle(),
+    'html-body-content'             => $this->wrapHTML( $out->getTitle(), $bodyContent ),
+    'html-categories'               => $this->getCategories(),
+    'html-after-content'            => $this->afterContentHook(),
+    'html-undelete-link'            => $this->prepareUndeleteLink(),
+    'html-user-language-attributes' => $this->prepareUserLanguageAttributes(),
+    // links
+    'link-mainpage'                 => Title::newMainPage()->getLocalURL(),
+];
+```
+
+The base `Skin::getTemplateData()` provides:
+
+```php includes/Skin/Skin.php
+$data = [
+    'html-title-heading' => Html::rawElement( 'h1', [...], $htmlTitle ),
+    'html-title'         => $htmlTitle ?: null,
+    'is-title-blank'     => $blankedHeading,
+    'is-anon'            => $user->isAnon(),
+    'is-article'         => $out->isArticle(),
+    'is-mainpage'        => $isMainPage,
+    'is-specialpage'     => $title->isSpecialPage(),
+    'canonical-url'      => $this->getCanonicalUrl(),
+];
+// Component data (footer, search, logo, etc.) is added under 'data-<componentName>'
+foreach ( $components as $componentName => $component ) {
+    $data['data-' . $componentName] = $component->getTemplateData();
+}
+```
+
+### Component data objects
+
+Several `data-*` keys contain nested component data:
+
+**`data-footer`**
+```mustache
+{{#data-footer}}
+    {{#data-info}}
+        {{#array-items}}<li>{{{html}}}</li>{{/array-items}}
+    {{/data-info}}
+    {{#data-places}}
+        {{#array-items}}<li>{{{html}}}</li>{{/array-items}}
+    {{/data-places}}
+{{/data-footer}}
+```
+
+**`data-logos`** (from `SkinComponentLogo`)
+```mustache
+{{#data-logos}}
+    {{#icon}}
+    <img class="mw-logo-icon" src="{{src}}" alt="">
+    {{/icon}}
+    {{#wordmark}}
+    <img class="mw-logo-wordmark" src="{{src}}" style="{{style}}">
+    {{/wordmark}}
+{{/data-logos}}
+```
+
+**`data-search-box`** (from `SkinComponentSearch`)
+```mustache
+{{#data-search-box}}
+<form action="{{form-action}}" id="searchform">
+    <input type="hidden" name="title" value="{{page-title}}">
+    {{{html-input}}}
+    {{{html-button-search}}}
+</form>
+{{/data-search-box}}
+```
+
+### Message keys
+
+Messages declared in the skin's `messages` constructor option are available as `msg-<key>`:
+
+```json skin.json
+"args": [{ "name": "mytheme", "messages": [ "search", "mytheme-footer-desc" ] }]
+```
+
+```mustache
+<label for="searchInput">{{msg-search}}</label>
+<p class="footer-desc">{{msg-mytheme-footer-desc}}</p>
+```
+
+## Adding skin-specific template data
+
+Override `getTemplateData()` in your skin class to provide additional keys:
+
+```php
+public function getTemplateData(): array {
+    $data = parent::getTemplateData();
+
+    // Add portlet data for navigation menus
+    // $data['data-portlets'] is assembled by SkinTemplate::getTemplateData()
+    // and contains keys like 'data-views', 'data-actions', 'data-user-menu', etc.
+
+    // Add a custom skin-specific flag
+    $data['is-sidebar-collapsed'] = $this->isSidebarCollapsed();
+
+    // Expose a config value as a string to templates
+    $data['html-custom-banner'] = $this->getConfig()->get( 'MyThemeBanner' )
+        ? $this->msg( 'mytheme-banner' )->parse()
+        : null;
+
+    return $data;
+}
+```
+
+## Template partials
+
+Partials let you split a skin template into reusable pieces. Place partial files in the same `templateDirectory` as your root `skin.mustache`:
+
+```
+skins/MyTheme/templates/
+├── skin.mustache          # root template
+├── navigation.mustache    # partial for the nav bar
+├── sidebar.mustache       # partial for the sidebar
+└── footer.mustache        # partial for the footer
+```
+
+Include them with `{{> partialName}}`:
+
+```mustache skin.mustache
+<div id="mw-wrapper">
+    {{> navigation}}
+    <main id="content" class="mw-body" role="main">
+        {{{html-title-heading}}}
+        {{{html-subtitle}}}
+        {{{html-body-content}}}
+        {{{html-categories}}}
+    </main>
+    {{> sidebar}}
+    {{> footer}}
+</div>
+```
+
+Partials inherit the full data context from the parent template. Recursive partials (used for the table of contents) are enabled by default in `SkinMustache`:
+
+```php includes/Skin/SkinMustache.php
+$this->templateParser->enableRecursivePartials( true );
+```
+
+<Warning>
+Do not disable `enableRecursivePartials` in your skin's `getTemplateParser()` override unless you are certain your skin never renders a table of contents. Disabling it will break ToC rendering.
+</Warning>
+
+## Escaping and security
+
+All `html-*` values in the template data contain HTML that has already been sanitised by MediaWiki's HTML sanitiser (`MediaWiki\Parser\Sanitizer`) or constructed by trusted code using `Html::element()` / `Html::rawElement()`. These values must be rendered with triple braces `{{{ }}}` to prevent double-escaping.
+
+<CardGroup cols={2}>
+  <Card title="Triple braces: raw HTML" icon="code">
+    Use `{{{html-body-content}}}` for pre-sanitised HTML strings returned by MediaWiki. Never use triple braces with user-supplied text.
+  </Card>
+  <Card title="Double braces: escaped" icon="shield">
+    Use `{{msg-search}}` for plain text values (message strings, URLs, class names) that should be HTML-escaped by the template engine.
+  </Card>
+</CardGroup>
+
+The data key naming convention enforces this: any key prefixed `html-` is already safe HTML; any key without that prefix is plain text that should go through Mustache's escaping.
+
+```mustache
+<!-- Correct: html- prefix means pre-sanitised HTML -->
+{{{html-body-content}}}
+{{{html-title-heading}}}
+
+<!-- Correct: plain text, double-brace escaped -->
+<html lang="{{html-lang}}" dir="{{html-dir}}">
+<meta name="description" content="{{msg-tagline}}">
+```
+
+## Testing skin templates
+
+<Steps>
+  <Step title="Unit test getTemplateData()">
+    Write a PHPUnit test that instantiates your skin with a mock context and calls `getTemplateData()`. Assert that required keys are present and have the expected types.
+
+    ```php tests/SkinMyThemeTest.php
+    public function testGetTemplateData() {
+        $skin = new SkinMyTheme( [ 'name' => 'mytheme' ] );
+        $skin->setContext( RequestContext::getMain() );
+        $data = $skin->getTemplateData();
+
+        $this->assertArrayHasKey( 'html-body-content', $data );
+        $this->assertArrayHasKey( 'data-footer', $data );
+        $this->assertIsBool( $data['is-anon'] );
+    }
+    ```
+  </Step>
+  <Step title="Test template rendering">
+    Use `TemplateParser::processTemplate()` directly to test that your template renders without errors given a fixture data array:
+
+    ```php
+    $tp = new TemplateParser( __DIR__ . '/../../templates' );
+    $tp->enableRecursivePartials( true );
+    $html = $tp->processTemplate( 'skin', $fixtureData );
+    $this->assertStringContainsString( 'id="firstHeading"', $html );
+    ```
+  </Step>
+  <Step title="Visual/browser testing">
+    Load the wiki in a browser with `?useskin=mytheme` appended to any URL to preview your skin without changing the site default. Combine with `?safemode=1` to disable all user scripts and gadgets.
+  </Step>
+</Steps>
+
+<Tip>
+During development, set `$wgMainCacheType = CACHE_NONE;` and `$wgMessageCacheType = CACHE_NONE;` in `LocalSettings.php` to prevent stale compiled templates from being served from the object cache.
+</Tip>

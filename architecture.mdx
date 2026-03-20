@@ -1,0 +1,270 @@
+---
+title: "Architecture Overview"
+description: "How MediaWiki's components fit together: request lifecycle, service container, hooks, and subsystems."
+---
+
+MediaWiki is a PHP application with a clearly layered architecture. At the outermost layer are a small set of PHP entry point files; at the core is a service container that manages all major subsystems. This page walks through that structure from the outside in.
+
+## Request lifecycle
+
+Every web request to MediaWiki passes through one of four entry points, each a thin PHP file that sets an `MW_ENTRY_POINT` constant and then bootstraps the full application via `includes/WebStart.php` → `includes/Setup.php`:
+
+```
+Browser / API Client
+       │
+       ▼
+┌─────────────────────────────────────────────────────┐
+│  Entry Point                                        │
+│  index.php   api.php   rest.php   load.php          │
+└─────────────────────────┬───────────────────────────┘
+                          │ require includes/WebStart.php
+                          ▼
+┌─────────────────────────────────────────────────────┐
+│  includes/Setup.php                                 │
+│  • Runtime environment checks                       │
+│  • Load AutoLoader, Defines, GlobalFunctions        │
+│  • Load LocalSettings.php (site configuration)      │
+│  • Load extensions via ExtensionRegistry            │
+│  • Initialize MediaWikiServices (service container) │
+│  • Initialize SessionManager, MWExceptionHandler    │
+└─────────────────────────┬───────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────┐
+│  Entry Point Class (→ run())                        │
+│  ActionEntryPoint / ApiEntryPoint /                 │
+│  Rest\EntryPoint / ResourceLoaderEntryPoint         │
+└─────────────────────────┬───────────────────────────┘
+                          │
+                          ▼
+              Routing → Handler → Output
+```
+
+### Entry points
+
+| File | Class | Handles |
+|------|-------|---------|
+| `index.php` | `ActionEntryPoint` | Page views, actions (edit, history, delete…), special pages |
+| `api.php` | `ApiEntryPoint` | All Action API (`?action=…`) queries |
+| `rest.php` | `Rest\EntryPoint` | REST API (`/rest.php/v1/…`) requests |
+| `load.php` | `ResourceLoaderEntryPoint` | CSS/JS asset bundles via ResourceLoader |
+
+Each entry point defines `MW_ENTRY_POINT` before including `WebStart.php`:
+
+```php
+// index.php
+define( 'MW_ENTRY_POINT', 'index' );
+require __DIR__ . '/includes/WebStart.php';
+
+( new ActionEntryPoint(
+    RequestContext::getMain(),
+    new EntryPointEnvironment(),
+    MediaWikiServices::getInstance()
+) )->run();
+```
+
+```php
+// api.php
+define( 'MW_API', true );
+define( 'MW_ENTRY_POINT', 'api' );
+require __DIR__ . '/includes/WebStart.php';
+
+( new ApiEntryPoint(
+    RequestContext::getMain(),
+    new EntryPointEnvironment(),
+    MediaWikiServices::getInstance()
+) )->run();
+```
+
+```php
+// load.php — session-independent; enforced with MW_NO_SESSION
+define( 'MW_NO_SESSION', 1 );
+define( 'MW_ENTRY_POINT', 'load' );
+require __DIR__ . '/includes/WebStart.php';
+```
+
+### Bootstrap sequence (Setup.php)
+
+`includes/Setup.php` is the single file responsible for bootstrapping all MediaWiki processes, both web and CLI. Its sequence is documented in its own file header:
+
+1. **Runtime environment checks** — PHP version, required extensions
+2. **Define `MW_INSTALL_PATH` and `$IP`** — the install path constants
+3. **Load `AutoLoader.php`, `Defines.php`** — class autoloading and constants
+4. **Assert Composer dependencies** — fails fast with a helpful message if `vendor/` is missing
+5. **Load `LocalSettings.php`** — site configuration via `SettingsBuilder`
+6. **Load extensions** — `ExtensionRegistry` reads all `extension.json` files
+7. **Initialize `MediaWikiServices`** — the DI service container
+8. **Initialize `MWExceptionHandler`** — installs the global exception handler
+9. **Initialize `SessionManager`** — sets up the PHP session
+10. **Apply dynamic config defaults** — settings that depend on other resolved settings
+
+<Note>
+  `Setup.php` must be included from a valid entry point that has defined the `MEDIAWIKI` constant. Accessing it directly from a browser will exit immediately. This is a deliberate security constraint.
+</Note>
+
+## The service container
+
+`MediaWikiServices` is the central service locator for all of MediaWiki core. It extends `Wikimedia\Services\ServiceContainer` (from `wikimedia/services`) and exposes typed accessor methods for every core service.
+
+```php
+// From includes/MediaWikiServices.php
+/**
+ * Service locator for MediaWiki core services.
+ *
+ * Refer to includes/ServiceWiring.php for the default implementations.
+ *
+ * @see [Dependency Injection](@ref dependencyinjection) in docs/Injection.md
+ *
+ * @since 1.27
+ */
+class MediaWikiServices extends ServiceContainer {
+    private static ?self $instance = null;
+    // ...
+}
+```
+
+Service wiring — the factories that construct each service — lives in `includes/ServiceWiring.php`. Extensions can add their own services by declaring a `ServiceWiringFiles` entry in `extension.json`.
+
+### Accessing services
+
+The recommended approach for code in MediaWiki core is to receive services via constructor injection:
+
+```php
+class MySpecialPage extends SpecialPage {
+    private ParserFactory $parserFactory;
+
+    public function __construct( ParserFactory $parserFactory ) {
+        parent::__construct( 'MyPage' );
+        $this->parserFactory = $parserFactory;
+    }
+}
+```
+
+For code that cannot use constructor injection (legacy code, hooks), the static accessor is available:
+
+```php
+$services = MediaWikiServices::getInstance();
+$parser   = $services->getParserFactory()->create();
+$db       = $services->getConnectionProvider()->getReplicaDatabase();
+```
+
+<Note>
+  `MediaWikiServices::getInstance()` is only available after `Setup.php` has called `MediaWikiServices::allowGlobalInstance()`. Calling it before that point (e.g., at class-load time) will throw a `LogicException`. Always inject dependencies via constructors in new code.
+</Note>
+
+## The hook system
+
+MediaWiki's hook system allows extensions to observe and modify core behavior without patching core files. The system is implemented through two classes:
+
+- **`HookContainer`** — Manages hook handler registration and dispatch. Extensions register handlers in `extension.json` under the `"Hooks"` key.
+- **`HookRunner`** — A generated class that provides typed methods for calling every core hook, replacing the old `Hooks::run()` string-based dispatch.
+
+```php
+// Calling a hook from core code (typed, via HookRunner)
+$this->hookRunner->onPageSaveComplete(
+    $wikiPage, $user, $summary, $flags, $revisionRecord, $editResult
+);
+
+// Registering a handler in extension.json
+{
+    "Hooks": {
+        "PageSaveComplete": "MyExtension\\Hooks::onPageSaveComplete"
+    }
+}
+
+// The handler in PHP
+class Hooks {
+    public static function onPageSaveComplete(
+        WikiPage $wikiPage,
+        UserIdentity $user,
+        string $summary,
+        int $flags,
+        RevisionRecord $revisionRecord,
+        EditResult $editResult
+    ): void {
+        // React to a page save
+    }
+}
+```
+
+## Major subsystems
+
+<CardGroup cols={2}>
+  <Card title="Parser" icon="file-code">
+    The `Parser` class (and the newer Parsoid-based `ParsoidParserFactory`) converts wikitext markup into HTML. The `ParserCache` stores parsed output keyed by page revision and options. Parser functions and tag hooks registered by extensions are called during parsing. Services: `ParserFactory`, `ParserCache`, `ParsoidParserFactory`.
+  </Card>
+  <Card title="ResourceLoader" icon="layer-group">
+    ResourceLoader (`load.php` → `ResourceLoaderEntryPoint`) bundles and delivers JavaScript and CSS modules to the browser. It handles dependency resolution, language-specific variants, minification via `wikimedia/minify`, LESS compilation via `wikimedia/less.php`, and cache busting. Modules are registered in `extension.json` under `"ResourceModules"`.
+  </Card>
+  <Card title="Auth" icon="lock">
+    The `AuthManager` service handles all login, account creation, and session management flows through a pluggable provider system (`AuthenticationProvider`). Session state is managed by `SessionManager`. Password hashing uses `PasswordFactory`, which supports multiple algorithms including Argon2. Permissions checks go through `PermissionManager`.
+  </Card>
+  <Card title="Database" icon="database">
+    Database access uses the `IConnectionProvider` interface backed by `LBFactory` (load balancer factory from `wikimedia/rdbms`). Core supports MariaDB/MySQL, PostgreSQL, and SQLite. The abstraction layer normalizes SQL across backends and handles primary/replica routing. Schema changes are managed by `DatabaseUpdater` in `maintenance/update.php`.
+  </Card>
+  <Card title="JobQueue" icon="list-check">
+    Deferred work (link updates, HTML cache purges, notifications) is dispatched through `JobQueueGroup` and processed asynchronously by job runners. In the Docker setup, a dedicated `mediawiki-jobrunner` container handles this. In the manual setup, jobs run inline or via `maintenance/runJobs.php`. Job classes are registered in `extension.json` under `"JobClasses"`.
+  </Card>
+  <Card title="ObjectCache" icon="bolt">
+    `ObjectCacheFactory` provides access to caching backends — APCu (local), Memcached, or Redis — through a unified `BagOStuff` interface. `WANObjectCache` adds a write-around layer with cross-datacenter invalidation support. The `ParserCache` and `MessageCache` are built on top of these primitives.
+  </Card>
+</CardGroup>
+
+## Extension loading
+
+Extensions are discovered and loaded by `ExtensionRegistry` during `Setup.php`. Each extension ships an `extension.json` manifest declaring its metadata, class autoloading, hook handlers, service wiring files, ResourceLoader modules, and database schema changes.
+
+```json
+{
+    "name": "MyExtension",
+    "version": "1.0.0",
+    "author": "Jane Developer",
+    "AutoloadNamespaces": {
+        "MediaWiki\\Extension\\MyExtension\\": "includes/"
+    },
+    "Hooks": {
+        "PageSaveComplete": "MediaWiki\\Extension\\MyExtension\\Hooks::onPageSaveComplete"
+    },
+    "ServiceWiringFiles": [
+        "includes/ServiceWiring.php"
+    ],
+    "ResourceModules": {
+        "ext.myExtension": {
+            "scripts": [ "resources/ext.myExtension.js" ],
+            "styles": [ "resources/ext.myExtension.css" ]
+        }
+    }
+}
+```
+
+Extensions are enabled by adding a `wfLoadExtension()` call to `LocalSettings.php`:
+
+```php
+// LocalSettings.php
+wfLoadExtension( 'MyExtension' );
+```
+
+`ExtensionRegistry` reads all `extension.json` files, merges their configurations, and triggers the `MediaWiki\Registration\ExtensionProcessor` to register hooks, autoloaders, and services before `MediaWikiServices` is finalized.
+
+<Note>
+  Extensions must never modify core MediaWiki files. All extension-to-core integration points go through `extension.json` declarations and the hook system. This ensures that core can be upgraded without losing extension changes.
+</Note>
+
+## Configuration
+
+Site configuration is loaded from `LocalSettings.php` via `SettingsBuilder`. Configuration keys are declared with types and defaults in `includes/MainConfigSchema.php` (or the compiled `includes/config-schema.php`). Settings are accessed throughout the codebase as `$wgSomeConfigKey` globals (legacy) or via the `Config` service interface (preferred in new code).
+
+```php
+// Legacy access
+global $wgSitename;
+$sitename = $wgSitename;
+
+// Preferred: inject Config via constructor
+class MyService {
+    public function __construct( private Config $config ) {}
+
+    public function getSitename(): string {
+        return $this->config->get( MainConfigNames::Sitename );
+    }
+}
+```

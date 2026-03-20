@@ -1,0 +1,250 @@
+---
+title: "Magic Words"
+description: "Parser variables, behavior switches, and parser functions in MediaWiki."
+---
+
+Magic words are localizable keywords in wikitext that the parser recognizes and replaces with dynamic values or that control parser behavior. From `magicword.md`:
+
+> Magic words are localizable keywords used in wikitext. They are used for many small fragments of text, including the names of parser functions, the names of variables, double-underscore behavior switches, and image link parameter names.
+
+Each magic word has a unique ID, a case-sensitivity flag, and a list of synonyms. The `MagicWord` class matches wikitext against these synonyms by compiling them into a regular expression.
+
+## Types of magic words
+
+<CardGroup cols={2}>
+  <Card title="Behavior switches" icon="toggle-right">
+    Double-underscore keywords that toggle parser behavior. Examples: `__TOC__`, `__NOTOC__`, `__NOINDEX__`, `__FORCETOC__`. They produce no output but modify how the page is rendered.
+  </Card>
+  <Card title="Variables" icon="variable">
+    Transclusion-style keywords that expand to dynamic values. Examples: `{{PAGENAME}}`, `{{CURRENTDAY}}`, `{{NUMBEROFARTICLES}}`. They take no arguments.
+  </Card>
+  <Card title="Parser functions" icon="function-square">
+    Variable-style keywords that accept arguments: `{{urlencode:foo bar}}`, `{{#if: condition | then | else }}`. The `#`-prefixed form is conventional for extension-defined functions.
+  </Card>
+  <Card title="Image parameters" icon="image">
+    Keywords used inside `[[File:...]]` syntax to control image rendering: `thumb`, `right`, `left`, `center`, `frameless`.
+  </Card>
+</CardGroup>
+
+## Core variables
+
+Core magic variables are implemented in `CoreMagicVariables`. Some variables have cache TTL hints because their values change over time:
+
+```php
+// Map of (word ID => cache TTL hint in seconds)
+private const CACHE_TTL_BY_ID = [
+    'currenttime'          => 3600,
+    'localtime'            => 3600,
+    'numberofarticles'     => 3600,
+    'numberoffiles'        => 3600,
+    'numberofedits'        => 3600,
+    'numberofusers'        => 3600,
+    'numberofactiveusers'  => 3600,
+    'numberofpages'        => 3600,
+    'currentversion'       => 86400,
+    'currenttimestamp'     => 3600,
+    'localtimestamp'       => 3600,
+    'pagesinnamespace'     => 3600,
+    'numberofadmins'       => 3600,
+    'numberingroup'        => 3600,
+];
+```
+
+Core parser functions without the `#` prefix (registered via `Parser::SFH_NO_HASH`) include:
+
+```
+ns, nse, urlencode, lcfirst, ucfirst, lc, uc,
+localurl, fullurl, canonicalurl, formatnum, grammar,
+gender, plural, padleft, padright, anchorencode,
+defaultsort, filepath, pagesincategory, pagesize,
+pagename, fullpagename, subpagename, basepagename,
+pageid, revisionid, revisionday, revisionyear,
+revisiontimestamp, namespace, talkspace, ...
+```
+
+## Registering magic words in an extension
+
+### Step 1: create the i18n magic words file
+
+Create a file named `ExtensionName.i18n.magic.php`. The array is keyed by language code, then by magic word ID. Index `0` is the case sensitivity flag (`0` = case-insensitive, `1` = case-sensitive); subsequent indices are synonyms.
+
+```php
+<?php
+
+$magicWords = [];
+
+$magicWords['en'] = [
+    // Case insensitive — 0 means case-insensitive
+    'mag_custom' => [ 0, 'custom' ],
+];
+
+$magicWords['es'] = [
+    'mag_custom' => [ 0, 'aduanero' ],
+];
+```
+
+### Step 2: register the file in extension.json
+
+```json
+{
+    "ExtensionMessagesFiles": {
+        "ExtensionNameMagic": "ExtensionName.i18n.magic.php"
+    },
+    "Hooks": {
+        "ParserFirstCallInit": "MyExtensionHooks::onParserFirstCallInit"
+    }
+}
+```
+
+<Warning>
+The key in `ExtensionMessagesFiles` (e.g. `"ExtensionNameMagic"`) must be globally unique. It must not be used by any other extension.
+</Warning>
+
+### Step 3: implement the parser function hook
+
+```php
+<?php
+
+class MyExtensionHooks {
+    public static function onParserFirstCallInit( $parser ) {
+        $parser->setFunctionHook(
+            'mag_custom',
+            [ self::class, 'expandCustom' ]
+        );
+        return true;
+    }
+
+    public static function expandCustom( $parser, $var1, $var2 ) {
+        return "custom: var1 is $var1, var2 is $var2";
+    }
+}
+```
+
+This registers `{{custom: arg1 | arg2 }}` (English) and `{{aduanero: arg1 | arg2 }}` (Spanish) as equivalent.
+
+## Behavior switches
+
+Behavior switches use double-underscore syntax and are matched by the `MagicWord` class. To add a custom behavior switch:
+
+<Steps>
+  <Step title="Define the magic word">
+    Add the ID and synonyms to your `.i18n.magic.php` file:
+
+    ```php
+    $magicWords['en'] = [
+        'mag_nosidebar' => [ 0, '__NOSIDEBAR__' ],
+    ];
+    ```
+  </Step>
+
+  <Step title="Register the behavior switch ID">
+    Use the `GetDoubleUnderscoreIDs` hook to add your ID to the list of recognized behavior switches:
+
+    ```php
+    public static function onGetDoubleUnderscoreIDs( array &$ids ): void {
+        $ids[] = 'mag_nosidebar';
+    }
+    ```
+
+    In `extension.json`:
+
+    ```json
+    {
+        "Hooks": {
+            "GetDoubleUnderscoreIDs": "MyExtensionHooks::onGetDoubleUnderscoreIDs"
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="React to the behavior switch">
+    Check `ParserOutput` in your hook to detect whether the switch was used:
+
+    ```php
+    // In an OutputPageParserOutput hook, or similar:
+    public static function onOutputPageParserOutput(
+        OutputPage $out,
+        ParserOutput $parserOutput
+    ): void {
+        if ( $parserOutput->getPageProperty( 'mag_nosidebar' ) !== null ) {
+            // Page used __NOSIDEBAR__, apply the effect
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Variables (magic variables)
+
+To register a custom variable that expands to a dynamic value, use the `GetMagicVariableIDs` hook plus `ParserGetVariableValueSwitch`:
+
+```php
+// Register the variable ID
+public static function onGetMagicVariableIDs( array &$ids ): void {
+    $ids[] = 'mag_customvar';
+}
+
+// Provide its value during parsing
+public static function onParserGetVariableValueSwitch(
+    Parser $parser,
+    array &$variableCache,
+    string $magicWordId,
+    ?string &$ret,
+    PPFrame $frame
+): void {
+    if ( $magicWordId === 'mag_customvar' ) {
+        $ret = 'hello from custom variable';
+        $variableCache[$magicWordId] = $ret;
+    }
+}
+```
+
+In `extension.json`:
+
+```json
+{
+    "ExtensionMessagesFiles": {
+        "MyExtensionMagic": "MyExtension.i18n.magic.php"
+    },
+    "Hooks": {
+        "GetMagicVariableIDs": "MyExtensionHooks::onGetMagicVariableIDs",
+        "ParserGetVariableValueSwitch": "MyExtensionHooks::onParserGetVariableValueSwitch"
+    }
+}
+```
+
+And in the magic words file:
+
+```php
+$magicWords['en'] = [
+    'mag_customvar' => [ 0, 'CUSTOMVAR' ],
+];
+```
+
+The variable is then used in wikitext as `{{CUSTOMVAR}}`.
+
+## MagicWord matching API
+
+The `MagicWord` class provides methods for matching text against a magic word:
+
+```php
+$mwFactory = MediaWikiServices::getInstance()->getMagicWordFactory();
+$mw = $mwFactory->get( 'redirect' );
+
+if ( $mw->match( $text ) ) {
+    // $text is a redirect keyword in the content language
+}
+
+// Match and remove from a string
+if ( $mw->matchAndRemove( $text ) ) {
+    // $text was modified in-place, keyword stripped
+}
+
+// Match any magic word from a list
+$mwArray = $mwFactory->newArray( [ 'redirect', 'img_right', 'img_left' ] );
+$matched = $mwArray->matchAndRemove( $text );
+```
+
+<Tip>
+Avoid extracting raw synonym lists from `MagicWord` and writing special-case string comparisons. Add a new `match()`-style method to the `MagicWord` or `MagicWordArray` class if the built-in matching methods don't cover your use case.
+</Tip>

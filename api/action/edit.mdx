@@ -1,0 +1,331 @@
+---
+title: "Edit API"
+description: "Using action=edit to create and modify wiki pages, including token handling and edit conflicts."
+---
+
+`action=edit` creates new pages and modifies existing ones. It is implemented in `ApiEditPage`, which wraps the `EditPage` class. All edit requests must be sent as HTTP POST and must include a valid CSRF token.
+
+<Warning>
+  `action=edit` is a write operation. You must be authenticated and possess a CSRF token before calling it. Unauthenticated edits are only possible on wikis that explicitly allow anonymous editing, and even then a token is required.
+</Warning>
+
+## Required parameters
+
+<ParamField body="title" type="string">
+  Title of the page to edit. Provide either `title` or `pageid`, not both.
+</ParamField>
+
+<ParamField body="pageid" type="integer">
+  Page ID of the page to edit. Alternative to `title`.
+</ParamField>
+
+<ParamField body="token" type="string" required>
+  CSRF token obtained from `action=query&meta=tokens&type=csrf`. The token is tied to the session; obtain a fresh token for each bot session, not each edit.
+</ParamField>
+
+## Content parameters
+
+At least one of `text`, `appendtext`, `prependtext`, or `undo` must be provided (enforced by `ApiEditPage::execute`).
+
+<ParamField body="text" type="string">
+  Full replacement text for the page. Replaces the entire content. Incompatible with `appendtext` and `prependtext`.
+</ParamField>
+
+<ParamField body="appendtext" type="string">
+  Text to append to the end of the page (or section). Does not require knowledge of the current content.
+</ParamField>
+
+<ParamField body="prependtext" type="string">
+  Text to prepend to the beginning of the page (or section).
+</ParamField>
+
+<ParamField body="section" type="string">
+  Section identifier. `0` for the lead section, a positive integer for a numbered section, or `new` to append a new section. When `section=new`, `sectiontitle` sets the new section heading.
+</ParamField>
+
+<ParamField body="sectiontitle" type="string">
+  Title for a new section. Only used when `section=new`.
+</ParamField>
+
+## Edit metadata
+
+<ParamField body="summary" type="string">
+  Edit summary displayed in the page history and recent changes. Strongly recommended for all edits. If omitted when creating a new section, the section title is used as the summary.
+</ParamField>
+
+<ParamField body="minor" type="boolean">
+  Mark the edit as minor. Only meaningful for logged-in users; the wiki may restrict who can set this flag.
+</ParamField>
+
+<ParamField body="notminor" type="boolean">
+  Explicitly mark the edit as non-minor, overriding the user preference to default to minor edits.
+</ParamField>
+
+<ParamField body="bot" type="boolean">
+  Mark the edit as a bot edit, hiding it from recent changes for users who filter bot edits. Requires the `bot` user right.
+</ParamField>
+
+<ParamField body="tags" type="string">
+  Pipe-separated list of change tags to apply to the edit (e.g., `tags=bot|automated`). Tags must be defined in the wiki's tag registry.
+</ParamField>
+
+## Conflict detection
+
+To detect edit conflicts — where another editor changed the page between your read and your write — pass timestamps obtained before your edit:
+
+<ParamField body="basetimestamp" type="timestamp">
+  Timestamp of the revision your edit is based on (from `rvprop=timestamp`). If the page was edited after this timestamp, the API returns an `edit-conflict` error.
+</ParamField>
+
+<ParamField body="starttimestamp" type="timestamp">
+  Timestamp of when you fetched the page content (your local read time). Used together with `basetimestamp` to detect file upload conflicts.
+</ParamField>
+
+<ParamField body="baserevid" type="integer">
+  Revision ID of the base revision, as an alternative to `basetimestamp`.
+</ParamField>
+
+## Creation control
+
+<ParamField body="createonly" type="boolean">
+  Fail with `articleexists` if the page already exists. Useful for ensuring you are creating, not overwriting.
+</ParamField>
+
+<ParamField body="nocreate" type="boolean">
+  Fail with `missingtitle` if the page does not already exist.
+</ParamField>
+
+<ParamField body="recreate" type="boolean">
+  Suppress the error that would otherwise occur when editing a page over an existing deletion log entry.
+</ParamField>
+
+## Undo
+
+<ParamField body="undo" type="integer">
+  Revision ID to undo. The API reconstructs the edit made by that revision and applies the inverse change.
+</ParamField>
+
+<ParamField body="undoafter" type="integer">
+  Revision ID to undo back to (inclusive). Undoes all revisions from `undo` back to `undoafter`. Omit to undo only the single revision specified by `undo`.
+</ParamField>
+
+## Content model
+
+<ParamField body="contentformat" type="string">
+  Serialization format of the `text` parameter (e.g., `text/x-wiki` for wikitext, `text/plain`, `application/json`). Defaults to the page's current content model format.
+</ParamField>
+
+<ParamField body="contentmodel" type="string">
+  Content model for the page (e.g., `wikitext`, `json`, `css`, `javascript`). Changing this also changes the content model of the page.
+</ParamField>
+
+## Complete edit workflow
+
+<Steps>
+  <Step title="Authenticate">
+    Log in using a bot password. See [Authentication](/api/action/authentication) for the full login flow. Store the session cookies for subsequent requests.
+  </Step>
+  <Step title="Fetch a CSRF token">
+    Obtain a token with `action=query&meta=tokens`. Reuse this token for the entire session; do not fetch a new one per edit.
+
+    ```bash
+    curl -b cookies.txt -c cookies.txt \
+      "https://en.wikipedia.org/w/api.php?action=query&meta=tokens&type=csrf&format=json&formatversion=2"
+    ```
+
+    Response:
+
+    ```json
+    {
+      "query": {
+        "tokens": {
+          "csrftoken": "d41d8cd98f00b204e9800998ecf8427e+\\"
+        }
+      }
+    }
+    ```
+  </Step>
+  <Step title="Fetch current content (optional but recommended)">
+    For conflict-safe edits, retrieve the current revision and its timestamp before editing.
+
+    ```bash
+    curl -b cookies.txt \
+      "https://en.wikipedia.org/w/api.php?action=query&titles=Sandbox&prop=revisions&rvprop=ids|timestamp|content&rvslots=main&format=json&formatversion=2"
+    ```
+
+    Record `revisions[0].revid` as your `baserevid` and `revisions[0].timestamp` as your `basetimestamp`.
+  </Step>
+  <Step title="Submit the edit">
+    POST to `action=edit` with the token, content, and conflict-detection timestamps.
+
+    ```bash
+    curl -b cookies.txt -c cookies.txt -X POST \
+      "https://en.wikipedia.org/w/api.php" \
+      --data-urlencode "action=edit" \
+      --data-urlencode "title=Sandbox" \
+      --data-urlencode "text=New content here." \
+      --data-urlencode "summary=Updating sandbox via API" \
+      --data-urlencode "basetimestamp=2024-01-15T10:30:00Z" \
+      --data-urlencode "token=d41d8cd98f00b204e9800998ecf8427e+\\" \
+      --data "format=json&formatversion=2"
+    ```
+  </Step>
+</Steps>
+
+## Code examples
+
+<CodeGroup>
+
+```bash Full edit with conflict detection
+TOKEN=$(curl -s -b cookies.txt \
+  "https://en.wikipedia.org/w/api.php?action=query&meta=tokens&format=json&formatversion=2" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['query']['tokens']['csrftoken'])")
+
+curl -b cookies.txt -c cookies.txt -X POST \
+  "https://en.wikipedia.org/w/api.php" \
+  --data-urlencode "action=edit" \
+  --data-urlencode "title=Project:Sandbox" \
+  --data-urlencode "text==Test heading==\nThis is a test paragraph." \
+  --data-urlencode "summary=API test edit" \
+  --data-urlencode "bot=1" \
+  --data-urlencode "token=$TOKEN" \
+  --data "format=json&formatversion=2"
+```
+
+```python Python (requests)
+import requests
+
+S = requests.Session()
+API_URL = "https://en.wikipedia.org/w/api.php"
+
+# Step 1: Get CSRF token (assumes session already authenticated)
+token_resp = S.get(API_URL, params={
+    "action": "query",
+    "meta": "tokens",
+    "type": "csrf",
+    "format": "json",
+    "formatversion": "2",
+}).json()
+csrf_token = token_resp["query"]["tokens"]["csrftoken"]
+
+# Step 2: Fetch current revision for conflict detection
+rev_resp = S.get(API_URL, params={
+    "action": "query",
+    "titles": "Project:Sandbox",
+    "prop": "revisions",
+    "rvprop": "ids|timestamp",
+    "format": "json",
+    "formatversion": "2",
+}).json()
+page = rev_resp["query"]["pages"][0]
+base_revid = page["revisions"][0]["revid"]
+base_ts = page["revisions"][0]["timestamp"]
+
+# Step 3: Submit edit
+edit_resp = S.post(API_URL, data={
+    "action": "edit",
+    "title": "Project:Sandbox",
+    "text": "== Test ==\nEdited via the Action API.",
+    "summary": "Test edit via API",
+    "baserevid": base_revid,
+    "basetimestamp": base_ts,
+    "bot": "1",
+    "token": csrf_token,
+    "format": "json",
+    "formatversion": "2",
+}).json()
+
+if edit_resp.get("edit", {}).get("result") == "Success":
+    print("Edit saved, new revision:", edit_resp["edit"]["newrevid"])
+else:
+    print("Edit failed:", edit_resp)
+```
+
+</CodeGroup>
+
+## Successful response
+
+```json
+{
+  "edit": {
+    "result": "Success",
+    "pageid": 12345,
+    "title": "Project:Sandbox",
+    "contentmodel": "wikitext",
+    "oldrevid": 987654,
+    "newrevid": 987655,
+    "newtimestamp": "2024-01-15T10:35:00Z",
+    "watched": false
+  }
+}
+```
+
+<ResponseField name="edit.result" type="string">
+  `"Success"` on success. Any other value indicates failure.
+</ResponseField>
+
+<ResponseField name="edit.newrevid" type="integer">
+  Revision ID of the newly created revision.
+</ResponseField>
+
+<ResponseField name="edit.nochange" type="boolean">
+  Present and `true` when the submitted text is identical to the current revision; no revision was created.
+</ResponseField>
+
+## Appending and prepending
+
+Use `appendtext` or `prependtext` to add content without knowing the full current page text. These parameters are especially useful for leaving messages on talk pages.
+
+```bash
+# Append a new section to a talk page
+curl -b cookies.txt -X POST "https://en.wikipedia.org/w/api.php" \
+  --data-urlencode "action=edit" \
+  --data-urlencode "title=User_talk:Example" \
+  --data-urlencode "section=new" \
+  --data-urlencode "sectiontitle=Question about your edit" \
+  --data-urlencode "appendtext=Hello, I had a question about your recent edit. ~~~~" \
+  --data-urlencode "token=$TOKEN" \
+  --data "format=json&formatversion=2"
+```
+
+## Section editing
+
+To edit a specific section, pass its index in `section`. Section `0` is always the lead section. Positive integers correspond to the section order in the wikitext.
+
+```bash
+curl -b cookies.txt -X POST "https://en.wikipedia.org/w/api.php" \
+  --data-urlencode "action=edit" \
+  --data-urlencode "title=MediaWiki" \
+  --data-urlencode "section=2" \
+  --data-urlencode "text=== Updated section text ==" \
+  --data-urlencode "summary=Updated section 2" \
+  --data-urlencode "token=$TOKEN" \
+  --data "format=json&formatversion=2"
+```
+
+## Undo a revision
+
+```bash
+curl -b cookies.txt -X POST "https://en.wikipedia.org/w/api.php" \
+  --data-urlencode "action=edit" \
+  --data-urlencode "title=MediaWiki" \
+  --data-urlencode "undo=987654" \
+  --data-urlencode "undoafter=987653" \
+  --data-urlencode "summary=Undoing revision 987654" \
+  --data-urlencode "token=$TOKEN" \
+  --data "format=json&formatversion=2"
+```
+
+## Error handling
+
+| Error code | Cause |
+|------------|-------|
+| `badtoken` | The CSRF token is invalid or expired |
+| `edit-conflict` | Another edit occurred between your read and write; fetch fresh content and retry |
+| `articleexists` | `createonly=1` was set but the page already exists |
+| `missingtitle` | `nocreate=1` was set but the page does not exist |
+| `noedit` | The page is protected and you lack the required permission |
+| `noedit-anon` | Anonymous editing is not allowed on this wiki or page |
+| `protectedpage` | The page is protected (see `inprop=protection` from `prop=info`) |
+| `blocked` | Your account is blocked from editing |
+| `ratelimited` | You have exceeded the edit rate limit; back off and retry |

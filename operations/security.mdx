@@ -1,0 +1,266 @@
+---
+title: "Security"
+description: "MediaWiki security practices: SQL injection prevention, XSS, CSRF tokens, and security hardening."
+---
+
+MediaWiki takes security seriously. This page covers the threat model, built-in protections, and hardening steps for production deployments.
+
+<Note>
+To report a security vulnerability in MediaWiki, follow the responsible disclosure process at [https://www.mediawiki.org/wiki/Reporting_security_bugs](https://www.mediawiki.org/wiki/Reporting_security_bugs). The security team also monitors [Phabricator](https://phabricator.wikimedia.org/) for reports.
+</Note>
+
+---
+
+## Security Model Overview
+
+MediaWiki operates with the following trust boundaries:
+
+- **Anonymous users** can read pages (by default) but cannot edit without an account
+- **Registered users** can edit but are subject to permission checks on every action
+- **Sysops / bureaucrats** have elevated privileges, but no action bypasses the permission layer
+- **Server-side code** runs with the privileges of the web server user — the database user should have minimal rights
+
+The biggest attack surfaces are:
+- User-supplied wikitext (rendered into HTML)
+- Uploaded files
+- URL and form parameters passed to PHP
+- Extension code
+
+---
+
+## SQL Injection Prevention
+
+MediaWiki uses the `Wikimedia\Rdbms` database abstraction layer, which provides parameterized query support. **Never interpolate user input directly into SQL strings.**
+
+### Use Parameterized Queries
+
+```php
+// WRONG — vulnerable to SQL injection
+$dbr->query( "SELECT * FROM page WHERE page_title = '" . $userInput . "'" );
+
+// CORRECT — use the query builder with parameterization
+$rows = $dbr->newSelectQueryBuilder()
+    ->select( [ 'page_id', 'page_title' ] )
+    ->from( 'page' )
+    ->where( [ 'page_title' => $userInput ] ) // automatically escaped
+    ->fetchResultSet();
+```
+
+### Use addQuotes() and addIdentifierQuotes()
+
+When you must construct query fragments, always escape values:
+
+```php
+// Escape a string value
+$safe = $dbr->addQuotes( $userInput );
+
+// Escape an identifier (table or column name)
+$safeCol = $dbr->addIdentifierQuotes( $columnName );
+```
+
+### Never Trust User Input
+
+- Validate all inputs server-side — client-side validation is never sufficient
+- Use `intval()` or type casting for numeric parameters
+- Use `Title::newFromText()` and check for `null` before using page titles from user input
+
+---
+
+## XSS Prevention
+
+Cross-site scripting (XSS) occurs when user-supplied data is rendered in HTML without escaping. MediaWiki's HTML output layer provides several tools:
+
+### HTML Escaping
+
+```php
+use MediaWiki\Html\Html;
+
+// Escape for plain text inside HTML
+$safe = htmlspecialchars( $userText, ENT_QUOTES, 'UTF-8' );
+
+// Use Html::element() to build safe elements
+$html = Html::element( 'span', [ 'class' => 'username' ], $username );
+
+// Use Html::rawElement() only when the content is already known-safe HTML
+$html = Html::rawElement( 'div', [ 'id' => 'content' ], $trustedHtml );
+```
+
+### OutputPage
+
+Always use `OutputPage` methods to add content to pages — do not concatenate raw HTML yourself:
+
+```php
+// In a SpecialPage or other output context
+$out->addWikiTextAsInterface( $wikitext ); // parses wikitext safely
+$out->addHTML( Html::element( 'p', [], $message ) ); // raw but escaped element
+$out->setPageTitle( $this->msg( 'my-special-page' ) ); // uses message system
+```
+
+### Content Security Policy (CSP)
+
+MediaWiki supports Content Security Policy headers to mitigate XSS even when output escaping fails:
+
+```php
+// LocalSettings.php
+$wgCSPHeader = true;
+
+// Customize the policy (advanced)
+$wgCSPHeader = [
+    'default-src' => [ 'self' ],
+    'script-src'  => [ 'self', 'nonce' ],
+    'style-src'   => [ 'self', 'unsafe-inline' ],
+];
+```
+
+<Note>
+CSP nonce support requires that inline scripts use the `$nonce` variable injected by OutputPage. Extension code that adds inline JavaScript should use `OutputPage::getCSP()->getNonce()`.
+</Note>
+
+---
+
+## CSRF Protection
+
+MediaWiki uses **edit tokens** (also called CSRF tokens) to protect state-changing actions. Every POST request that modifies data must include a valid token tied to the user's session.
+
+### Using Tokens in Extensions
+
+```php
+// Generate a token for a form
+$token = $user->getEditToken( 'my-action' );
+
+// Verify a token on form submission
+if ( !$user->matchEditToken( $request->getVal( 'token' ), 'my-action' ) ) {
+    // Token mismatch — reject the request
+    throw new PermissionsError( 'badtoken' );
+}
+```
+
+### API Edit Tokens
+
+The MediaWiki API requires a `csrf` token for all write actions. Clients obtain a token via `action=query&meta=tokens` and include it in the request.
+
+---
+
+## File Upload Security
+
+Uploaded files are a significant attack vector. MediaWiki applies multiple layers of validation:
+
+- **MIME type checking** — verifies the actual file content, not just the extension
+- **File extension allowlist** — only permitted extensions can be uploaded (`$wgFileExtensions`)
+- **SVG sanitization** — uploaded SVGs are processed to remove `<script>` tags, event handlers, and `javascript:` URLs
+- **Virus scanning** — can be integrated via `$wgAntivirus`
+
+```php
+// LocalSettings.php
+
+// Permitted file extensions
+$wgFileExtensions = [ 'png', 'gif', 'jpg', 'jpeg', 'webp', 'svg', 'pdf', 'ogg', 'mp4' ];
+
+// Explicitly block dangerous extensions (in addition to defaults)
+$wgFileBlacklist[] = 'html';
+$wgFileBlacklist[] = 'js';
+
+// Antivirus command (e.g. ClamAV)
+$wgAntivirus        = 'clamdscan';
+$wgAntivirusSetup   = [
+    'clamdscan' => [
+        'command'      => 'clamdscan --no-summary',
+        'codemap'      => [ '0' => AV_NO_VIRUS, '1' => AV_VIRUS_FOUND, '*' => AV_SCAN_FAILED ],
+        'messagepattern' => '/.*: (.+) FOUND/',
+    ],
+];
+
+// Require a user to be logged in to upload
+$wgGroupPermissions['*']['upload'] = false;
+$wgGroupPermissions['user']['upload'] = true;
+```
+
+<Warning>
+As of MediaWiki 1.46, `$wgSVGNativeRendering` defaults to `true`, meaning SVGs are rendered directly by the browser. Configure CSP headers (see above) to protect users who open SVG files directly in the browser.
+</Warning>
+
+---
+
+## $wgSecretKey and $wgUpgradeKey
+
+`$wgSecretKey` is the most important secret in your `LocalSettings.php`. It is used to:
+
+- Sign user sessions
+- Generate CSRF (edit) tokens
+- Authenticate MediaWiki API bot passwords
+- Sign certain URLs and cookies
+
+```php
+// Generate a strong secret key (run once on the command line):
+// php -r "echo bin2hex(random_bytes(32)) . PHP_EOL;"
+
+$wgSecretKey = 'your-64-character-hex-string-here';
+
+// $wgUpgradeKey is used during the web-based upgrade process
+$wgUpgradeKey = 'another-16-character-key';
+```
+
+<Warning>
+Never commit `LocalSettings.php` to a public code repository. If `$wgSecretKey` is compromised, rotate it immediately — this will invalidate all active sessions, requiring users to log in again.
+</Warning>
+
+---
+
+## Hardening Checklist
+
+<Steps>
+  <Step title="Set a strong $wgSecretKey">
+    Generate a cryptographically random 64-character hex string and set it in `LocalSettings.php`. Do not reuse a key across wikis.
+  </Step>
+
+  <Step title="Restrict LocalSettings.php permissions">
+    Ensure `LocalSettings.php` is readable only by the web server user:
+    ```bash
+    chmod 640 /var/www/wiki/LocalSettings.php
+    chown root:www-data /var/www/wiki/LocalSettings.php
+    ```
+  </Step>
+
+  <Step title="Protect the maintenance directory">
+    Block web access to `maintenance/` — these scripts must only be run from the CLI:
+    ```apache
+    # Apache
+    <Directory /var/www/wiki/maintenance>
+        Require all denied
+    </Directory>
+    ```
+  </Step>
+
+  <Step title="Use HTTPS">
+    Set `$wgServer` to an `https://` URL and configure `$wgCookieSecure = true` to ensure session cookies are only sent over HTTPS.
+
+    ```php
+    $wgServer        = 'https://wiki.example.com';
+    $wgCookieSecure  = true;
+    ```
+  </Step>
+
+  <Step title="Restrict file uploads">
+    Set `$wgFileExtensions` to only the types you need. Enable antivirus scanning via `$wgAntivirus` if possible.
+  </Step>
+
+  <Step title="Enable Content Security Policy">
+    Set `$wgCSPHeader = true` to add a CSP header that mitigates XSS attacks.
+  </Step>
+
+  <Step title="Limit database permissions">
+    The database user in `LocalSettings.php` should only have `SELECT`, `INSERT`, `UPDATE`, `DELETE` on the wiki database. It does not need `DROP`, `CREATE`, or `ALTER` — use a separate privileged user for running `update.php`.
+  </Step>
+
+  <Step title="Keep MediaWiki and extensions updated">
+    Subscribe to the [mediawiki-announce mailing list](https://lists.wikimedia.org/postorius/lists/mediawiki-announce.lists.wikimedia.org/) for security release notifications. Apply security patches promptly.
+  </Step>
+
+  <Step title="Audit extension permissions">
+    Review `$wgGroupPermissions` after installing extensions. Some extensions add new rights; verify that defaults are appropriate for your wiki.
+  </Step>
+
+  <Step title="Review $wgAllowExternalImages">
+    Setting `$wgAllowExternalImages = true` can be used for CSS-based information leakage (tracking pixels). Prefer `$wgAllowExternalImagesFrom` with an allowlist, or disable entirely.
+  </Step>
+</Steps>

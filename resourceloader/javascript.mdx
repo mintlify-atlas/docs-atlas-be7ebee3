@@ -1,0 +1,403 @@
+---
+title: "JavaScript Development"
+description: "Using the mw global API, ResourceLoader modules, and MediaWiki's JavaScript patterns."
+---
+
+MediaWiki exposes a global `mw` object that provides APIs for interacting with the wiki from JavaScript. All extension JavaScript runs in ResourceLoader modules and has access to `mw` without any imports. This page covers the core `mw.*` APIs and common patterns for writing MediaWiki JavaScript.
+
+## The mw global object
+
+The `mw` global is defined in `mediawiki.base` and bootstrapped by the startup module. It is available on all pages once `mediawiki.base` has loaded (which happens automatically before user scripts run).
+
+The `mw.Map` class backs both `mw.config` and `mw.messages`:
+
+```javascript
+// mw.Map — collection of values by string keys
+// Get one key:
+var siteName = mw.config.get( 'wgSiteName' );
+
+// Get multiple keys at once:
+var conf = mw.config.get( [ 'wgServerName', 'wgUserName', 'wgPageName' ] );
+console.log( conf.wgServerName ); // "example.org"
+
+// Check whether a key exists:
+if ( mw.config.exists( 'wgRelevantPageName' ) ) { /* ... */ }
+
+// Check multiple keys (AND condition):
+if ( mw.config.exists( [ 'wgFoo', 'wgBar' ] ) ) { /* ... */ }
+```
+
+## mw.config: accessing wiki configuration
+
+`mw.config` is a `mw.Map` pre-populated with configuration values from the server. Common keys:
+
+| Key | Type | Description |
+|---|---|---|
+| `wgPageName` | string | Current page name (with underscores), e.g. `"Main_Page"` |
+| `wgTitle` | string | Display title of the current page |
+| `wgNamespaceNumber` | number | Namespace ID of the current page |
+| `wgArticleId` | number | Page ID (0 for non-existent pages) |
+| `wgUserName` | string\|null | Logged-in username, or `null` for anonymous users |
+| `wgUserGroups` | string[] | User groups the current user belongs to |
+| `wgContentLanguage` | string | Wiki content language code |
+| `wgUserLanguage` | string | User interface language code |
+| `wgSiteName` | string | Wiki site name |
+| `wgVersion` | string | MediaWiki version string |
+| `wgAction` | string | Current action: `"view"`, `"edit"`, `"history"`, etc. |
+| `wgIsArticle` | boolean | Whether the current page is a content page |
+| `wgIsProbablyEditable` | boolean | Whether the current user can edit the page |
+| `wgRevisionId` | number | Revision ID being viewed |
+| `wgFormattedNamespaces` | object | Map of namespace IDs to localized names |
+
+```javascript
+// Check if the user is logged in
+if ( mw.config.get( 'wgUserName' ) !== null ) {
+    console.log( 'Logged in as', mw.config.get( 'wgUserName' ) );
+}
+
+// Get the current page's namespace
+var ns = mw.config.get( 'wgNamespaceNumber' );
+if ( ns === 0 ) {
+    // Main namespace
+}
+```
+
+## mw.loader: loading modules on demand
+
+`mw.loader` manages the module registry and state machine. It initiates network requests for loading modules, resolves dependencies, and executes source code.
+
+```javascript
+// Load a module and run code after it's ready
+mw.loader.using( 'mediawiki.api' ).then( function () {
+    var api = new mw.Api();
+    // ...
+} );
+
+// Load multiple modules
+mw.loader.using( [ 'mediawiki.api', 'mediawiki.notification' ] ).then( function () {
+    var api = new mw.Api();
+    mw.notification.notify( 'Modules loaded!' );
+} );
+
+// Fire-and-forget loading
+mw.loader.load( 'ext.myExtension.heavyFeature' );
+
+// Check the state of a module
+console.log( mw.loader.getState( 'mediawiki.api' ) );
+// Returns: 'registered', 'loading', 'loaded', 'executing', 'ready', 'error', or 'missing'
+```
+
+<Note>
+If your module is already declared in `extension.json` with the correct `dependencies`, you normally do not need to call `mw.loader.using()` yourself — ResourceLoader ensures dependencies are loaded before your module executes.
+</Note>
+
+## mw.Api: making Action API calls
+
+`mw.Api` is a client for the [MediaWiki Action API](https://www.mediawiki.org/wiki/API:Main_page). It handles CSRF tokens, error handling, and request formatting.
+
+```javascript
+// Create an API instance
+var api = new mw.Api();
+
+// GET request
+api.get( {
+    action: 'query',
+    meta: 'userinfo'
+} ).then( function ( data ) {
+    console.log( data.query.userinfo );
+} );
+
+// Since MW 1.25, multi-value parameters accept arrays:
+api.get( {
+    action: 'query',
+    meta: [ 'userinfo', 'siteinfo' ]  // same as 'userinfo|siteinfo'
+} ).then( function ( data ) {
+    console.log( data );
+} );
+```
+
+The API defaults are set from the source:
+
+```javascript
+const defaultOptions = {
+    parameters: {
+        action: 'query',
+        format: 'json'
+    },
+    ajax: {
+        url: mw.util.wikiScript( 'api' ),
+        timeout: 30 * 1000,  // 30 seconds
+        dataType: 'json'
+    }
+};
+```
+
+### Editing pages
+
+`mw.Api` includes helper methods for common operations. From `mediawiki.api/edit.js`:
+
+```javascript
+var api = new mw.Api();
+
+// Create a new page
+api.create(
+    'Sandbox',
+    { summary: 'Creating a test page' },
+    'Hello, world!'
+).then( function () {
+    console.log( 'Page created' );
+} );
+
+// Edit an existing page
+api.edit( 'Sandbox', function ( revision ) {
+    return {
+        text: revision.content + '\n\nAppended text.',
+        summary: 'Appending text'
+    };
+} ).then( function () {
+    console.log( 'Page saved' );
+} );
+
+// Get a CSRF edit token explicitly
+api.getEditToken().then( function ( token ) {
+    return api.postWithEditToken( {
+        action: 'edit',
+        title: 'Sandbox',
+        text: 'New content',
+        summary: 'Replacing content'
+    } );
+} );
+```
+
+### REST API
+
+For the REST API use `mw.Rest`:
+
+```javascript
+var rest = new mw.Rest();
+rest.get( '/v1/page/Main_Page' ).then( function ( data ) {
+    console.log( data.source );
+} );
+```
+
+## mw.hook: the JavaScript hook system
+
+`mw.hook` provides a publish/subscribe event system. Hooks let different parts of the codebase communicate without direct coupling.
+
+```javascript
+// Listen for a hook
+mw.hook( 'wikipage.content' ).add( function ( $content ) {
+    // Called when new page content is added to the DOM
+    // $content is a jQuery object containing the new content
+    $content.find( '.my-extension-widget' ).each( function () {
+        // Initialize widgets
+    } );
+} );
+
+// Fire a hook with data
+mw.hook( 'ext.myExtension.saved' ).fire( { pageId: 42, title: 'Example' } );
+
+// Listen only once
+mw.hook( 'ext.myExtension.ready' ).add( function handler() {
+    mw.hook( 'ext.myExtension.ready' ).remove( handler );
+    // ... do something once
+} );
+```
+
+Core hooks fired by MediaWiki:
+
+| Hook | When fired |
+|---|---|
+| `wikipage.content` | After page content is added or replaced in the DOM |
+| `wikipage.editform` | After the edit form is rendered |
+| `wikipage.diff` | After a diff is shown |
+| `mediawiki.page.ready` | When the DOM is ready and `mediawiki.page.ready` module has run |
+
+## mw.notify: user notifications
+
+`mw.notification.notify()` displays non-blocking notification banners. From `notification.js`:
+
+```javascript
+// Simple text notification
+mw.notification.notify( 'Your changes have been saved.' );
+
+// Error notification
+mw.notification.notify(
+    mw.msg( 'myextension-save-error' ),
+    { type: 'error' }
+);
+
+// Notification with a title
+mw.notification.notify(
+    $( '<p>' ).text( 'The operation completed.' ),
+    {
+        title: mw.msg( 'myextension-done-title' ),
+        type: 'info',
+        autoHide: true,
+        autoHideSeconds: 5
+    }
+);
+
+// Notification with a jQuery element and manual close
+var notif = mw.notification.notify(
+    $( '<span>' ).text( 'Processing...' ),
+    { autoHide: false }
+);
+// Later:
+notif.close();
+```
+
+Notification types: `'info'` (default), `'warn'`, `'error'`, `'success'`.
+
+Notifications announce to ARIA live regions for assistive technology. For notifications with complex widget content, pass `options.ariaText` with a plain-text description.
+
+## mw.message: i18n messages
+
+```javascript
+// Get a message as a string
+var str = mw.msg( 'myextension-hello', 'World' );
+// → 'Hello, World!' (if the message is 'Hello, $1!')
+
+// Get a message object for more control
+var msgObj = mw.message( 'myextension-intro' );
+console.log( msgObj.text() );     // plain text
+console.log( msgObj.escaped() );  // HTML-escaped
+console.log( msgObj.parse() );    // parsed HTML (requires mediawiki.jqueryMsg)
+
+// Set messages (done automatically by ResourceLoader, but possible manually)
+mw.messages.set( {
+    'hello': 'Hello world',
+    'hello-user': 'Hello, $1!'
+} );
+```
+
+## Using jQuery in MediaWiki
+
+MediaWiki loads jQuery as the `jquery` module. In ResourceLoader modules, `$` and `jQuery` are available globally:
+
+```javascript
+// Standard jQuery usage
+$( document ).ready( function () {
+    $( '#my-button' ).on( 'click', function () {
+        $( this ).addClass( 'active' );
+    } );
+} );
+
+// With mw.hook — preferred over $(document).ready for content init
+mw.hook( 'wikipage.content' ).add( function ( $content ) {
+    $content.find( '.collapsible' ).each( function () {
+        // Safe to initialize here even for content loaded via AJAX
+    } );
+} );
+```
+
+<Tip>
+Prefer `mw.hook( 'wikipage.content' )` over `$( document ).ready()` for initializing widgets in page content. The hook fires both on initial load and when content is dynamically replaced (for example, after a live preview).
+</Tip>
+
+## Module patterns
+
+### IIFE (immediately invoked function expression)
+
+Core modules that do not use `packageFiles` wrap their code in an IIFE to avoid leaking variables into the global scope:
+
+```javascript
+( function () {
+    'use strict';
+
+    // Private state
+    var initialized = false;
+
+    function init() {
+        if ( initialized ) {
+            return;
+        }
+        initialized = true;
+        // ...
+    }
+
+    // Attach to a hook so the module activates when content loads
+    mw.hook( 'wikipage.content' ).add( init );
+
+}() );
+```
+
+### Package module pattern
+
+For complex modules with multiple files, use `packageFiles` in `extension.json` and CommonJS-style `require()`:
+
+```javascript
+// resources/index.js
+'use strict';
+
+var Api = require( './api.js' );
+var Ui  = require( './ui.js' );
+
+// Initialize on content load
+mw.hook( 'wikipage.content' ).add( function ( $content ) {
+    var api = new Api();
+    var ui  = new Ui( $content, api );
+    ui.init();
+} );
+```
+
+```javascript
+// resources/api.js
+'use strict';
+
+function MyExtensionApi() {
+    this.mwApi = new mw.Api();
+}
+
+MyExtensionApi.prototype.fetchData = function ( pageId ) {
+    return this.mwApi.get( {
+        action: 'query',
+        pageids: pageId,
+        prop: 'revisions',
+        rvprop: 'content'
+    } );
+};
+
+module.exports = MyExtensionApi;
+```
+
+```javascript
+// resources/ui.js
+'use strict';
+
+function MyExtensionUi( $content, api ) {
+    this.$content = $content;
+    this.api = api;
+}
+
+MyExtensionUi.prototype.init = function () {
+    var self = this;
+    this.$content.find( '.myextension-load-btn' ).on( 'click', function () {
+        var pageId = mw.config.get( 'wgArticleId' );
+        self.api.fetchData( pageId ).then( function ( data ) {
+            mw.notification.notify( 'Loaded!' );
+        } );
+    } );
+};
+
+module.exports = MyExtensionUi;
+```
+
+### Accessing user info
+
+```javascript
+// Check if the user is logged in
+var isLoggedIn = mw.config.get( 'wgUserName' ) !== null;
+
+// Get user groups
+var groups = mw.config.get( 'wgUserGroups' );
+var isSysop = groups.indexOf( 'sysop' ) !== -1;
+
+// Get page and revision info
+var pageInfo = mw.config.get( [
+    'wgArticleId',
+    'wgRevisionId',
+    'wgPageName',
+    'wgNamespaceNumber'
+] );
+```

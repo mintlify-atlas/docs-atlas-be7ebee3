@@ -1,0 +1,234 @@
+---
+title: "Upgrading MediaWiki"
+description: "How to safely upgrade MediaWiki to a new version."
+---
+
+This guide covers the process of upgrading an existing MediaWiki installation to a newer version. Read it in full before starting — some steps cannot be undone.
+
+<Warning>
+Upgrading from releases older than two LTS releases is not supported. As of MediaWiki 1.46, **any upgrade from a version older than 1.39 will fail**. If you are on an older version, upgrade to an intermediate LTS release first.
+</Warning>
+
+---
+
+## Pre-Upgrade Checklist
+
+Before touching any files, verify the following:
+
+- Read the **release notes** (`RELEASE-NOTES-1.46`) for the new version, paying particular attention to:
+  - Removed configuration variables
+  - Changed defaults
+  - Database schema changes
+  - Extension compatibility notes
+- Confirm your server meets the PHP and database version requirements for the new release
+- Check that all your extensions have compatible versions for the new MediaWiki release
+- Notify users of the planned downtime window
+
+---
+
+## Upgrade Steps
+
+<Steps>
+  <Step title="Put the wiki in read-only mode">
+    Set `$wgReadOnly` in `LocalSettings.php` to prevent edits during the upgrade. This avoids data inconsistency between the old and new schema.
+
+    ```php
+    // LocalSettings.php
+    $wgReadOnly = 'Site maintenance in progress. Back soon.';
+    ```
+  </Step>
+
+  <Step title="Back up the database">
+    Take a full backup of the wiki database. Do not skip this step — the upgrade modifies the schema and some changes cannot be rolled back.
+
+    ```bash
+    # MySQL / MariaDB
+    mysqldump --single-transaction -u wikiuser -p my_wiki > wiki-backup-$(date +%Y%m%d).sql
+
+    # PostgreSQL
+    pg_dump -U wikiuser my_wiki > wiki-backup-$(date +%Y%m%d).sql
+
+    # SQLite
+    sqlite3 /path/to/wiki.db ".backup /path/to/wiki-backup-$(date +%Y%m%d).db"
+    ```
+
+    Verify the backup is complete and can be restored.
+  </Step>
+
+  <Step title="Back up your files">
+    Back up `LocalSettings.php`, the `extensions/` directory, the `skins/` directory, and your upload directory (`images/` by default).
+
+    ```bash
+    # Back up configuration and extensions
+    tar czf wiki-files-$(date +%Y%m%d).tar.gz \
+      /var/www/wiki/LocalSettings.php \
+      /var/www/wiki/extensions/ \
+      /var/www/wiki/skins/ \
+      /var/www/wiki/images/
+    ```
+  </Step>
+
+  <Step title="Download the new MediaWiki version">
+    Download the new release from [releases.wikimedia.org/mediawiki/](https://releases.wikimedia.org/mediawiki/) or check out the appropriate tag from Git.
+
+    ```bash
+    # Download and extract a release tarball
+    wget https://releases.wikimedia.org/mediawiki/1.46/mediawiki-1.46.0.tar.gz
+    tar xzf mediawiki-1.46.0.tar.gz
+    ```
+  </Step>
+
+  <Step title="Replace the MediaWiki files">
+    Replace the existing MediaWiki files with the new ones. **Preserve** the following:
+    - `LocalSettings.php`
+    - `extensions/` directory (custom or third-party extensions)
+    - `skins/` directory (custom or third-party skins)
+    - Your upload directory (default: `images/`)
+    - Any custom `$wgUploadDirectory` path
+
+    ```bash
+    # Example deployment (adjust paths as needed)
+    rsync -av --delete \
+      --exclude 'LocalSettings.php' \
+      --exclude 'extensions/' \
+      --exclude 'skins/' \
+      --exclude 'images/' \
+      mediawiki-1.46.0/ /var/www/wiki/
+    ```
+  </Step>
+
+  <Step title="Update Composer dependencies">
+    Install PHP dependencies for the new version:
+
+    ```bash
+    composer install --no-dev
+    ```
+  </Step>
+
+  <Step title="Update extensions and skins">
+    Download compatible versions of your extensions and skins for the new MediaWiki version. Extension compatibility is documented on mediawiki.org.
+
+    ```bash
+    # If using Git submodules for extensions
+    git submodule update --init --recursive
+    ```
+  </Step>
+
+  <Step title="Run the database upgrade script">
+    This is the critical step that applies database schema changes and data migrations.
+
+    ```bash
+    php maintenance/run.php update --quick
+    ```
+
+    The `--quick` flag skips the 5-second countdown. The script will:
+    - Check all extension dependencies
+    - Apply any missing database tables
+    - Alter existing tables to match the new schema
+    - Run data migration updates
+    - Report each applied change
+
+    <Note>
+    If you need a DBA to apply schema changes separately, use `--schema` to generate an SQL file:
+    ```bash
+    php maintenance/run.php update --schema /tmp/schema-changes.sql
+    php maintenance/run.php update --noschema  # Apply data-only changes after DBA runs the SQL
+    ```
+    </Note>
+  </Step>
+
+  <Step title="Review configuration changes">
+    Check the release notes for removed or renamed configuration variables. MediaWiki 1.46 notable changes include:
+
+    - `$wgAPIRequestLog` removed (deprecated since 1.43)
+    - `$wgBlockTargetMigrationStage` removed
+    - `$wgSVGNativeRendering` now defaults to `true`
+    - `$wgSVGConverter` presets `sodipodi` and `imgserv` removed
+
+    Update `LocalSettings.php` accordingly.
+  </Step>
+
+  <Step title="Rebuild caches">
+    After the upgrade, rebuild derived data:
+
+    ```bash
+    # Rebuild the localisation cache
+    php maintenance/run.php rebuildLocalisationCache
+
+    # Clear the message cache
+    php maintenance/run.php rebuildmessages
+    ```
+  </Step>
+
+  <Step title="Remove read-only mode and test">
+    Remove (or comment out) `$wgReadOnly` from `LocalSettings.php`, then verify the upgrade:
+
+    ```php
+    // Remove this line:
+    // $wgReadOnly = 'Site maintenance in progress. Back soon.';
+    ```
+
+    Test the following:
+    - Page views render correctly
+    - You can log in and log out
+    - Editing a page works
+    - Special pages load (Special:RecentChanges, Special:SpecialPages)
+    - File uploads work if your wiki uses them
+    - Key extensions are functional
+  </Step>
+</Steps>
+
+---
+
+## Web-Based Upgrade
+
+An alternative to the CLI upgrade is the web-based upgrade wizard. After replacing the files, browse to `mw-config/index.php` from your wiki's domain. The wizard detects the existing configuration and guides you through the database update.
+
+<Note>
+The web-based upgrade requires that `$wgAllowSchemaUpdates` is `true` (the default). It is less suitable for large wikis or environments where schema changes need DBA review.
+</Note>
+
+---
+
+## Common Upgrade Issues
+
+### Composer dependencies missing
+
+```bash
+# If you see errors about missing classes after upgrade
+composer install --no-dev
+php maintenance/run.php checkDependencies
+```
+
+### Extension compatibility errors
+
+If an extension is incompatible, MediaWiki will refuse to load and display an error. Check the extension's documentation for a compatible version, or temporarily disable the extension in `LocalSettings.php`:
+
+```php
+// Temporarily disable while you find a compatible version
+// wfLoadExtension( 'IncompatibleExtension' );
+```
+
+### $wgAllowSchemaUpdates is false
+
+On wikis where schema updates are restricted, `update.php` will refuse to run without an override:
+
+```bash
+# Generate the SQL file for DBA review
+php maintenance/run.php update --schema /tmp/changes.sql
+
+# After DBA applies the SQL:
+php maintenance/run.php update --noschema
+```
+
+### update.php fails partway through
+
+Restore your database backup and investigate the error. Do not run `update.php` multiple times on a partially upgraded database without first restoring from backup.
+
+### White screen / fatal errors after upgrade
+
+Enable PHP error logging and check your web server error log. Common causes:
+
+- Missing Composer dependencies (`composer install --no-dev`)
+- Removed configuration variable still referenced in `LocalSettings.php`
+- Incompatible extension still loaded

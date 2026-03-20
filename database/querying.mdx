@@ -1,0 +1,450 @@
+---
+title: "Querying the Database"
+description: "How to read and write data using MediaWiki's query builder APIs."
+---
+
+MediaWiki provides query builder classes for SELECT, INSERT, UPDATE, and DELETE operations. These builders handle table name prefixes, value escaping, and cross-database syntax differences automatically. Raw SQL via `IDatabase::query()` is available but strongly discouraged.
+
+## Getting a database connection
+
+```php
+use MediaWiki\MediaWikiServices;
+
+$dbProvider = MediaWikiServices::getInstance()->getConnectionProvider();
+$dbr = $dbProvider->getReplicaDatabase();  // for reads
+$dbw = $dbProvider->getPrimaryDatabase();  // for writes
+```
+
+See [Database Overview](/database/overview) for the full connection and read/write split documentation.
+
+## SELECT queries
+
+Use `IDatabase::newSelectQueryBuilder()` to construct SELECT queries.
+
+### Basic select
+
+```php
+$dbr = $dbProvider->getReplicaDatabase();
+$res = $dbr->newSelectQueryBuilder()
+    ->select( [ 'page_id', 'page_title', 'page_namespace' ] )
+    ->from( 'page' )
+    ->where( [ 'page_namespace' => NS_MAIN ] )
+    ->orderBy( 'page_title', SelectQueryBuilder::SORT_ASC )
+    ->limit( 50 )
+    ->caller( __METHOD__ )
+    ->fetchResultSet();
+
+foreach ( $res as $row ) {
+    echo $row->page_title . "\n";
+}
+```
+
+### Fetching a single row or field
+
+<CodeGroup>
+
+```php fetchRow()
+// Returns one row as a stdClass object, or false if no rows match
+$row = $dbr->newSelectQueryBuilder()
+    ->select( [ 'page_id', 'page_latest' ] )
+    ->from( 'page' )
+    ->where( [ 'page_namespace' => NS_MAIN, 'page_title' => 'Main_Page' ] )
+    ->caller( __METHOD__ )
+    ->fetchRow();
+
+if ( $row !== false ) {
+    $latestRevId = $row->page_latest;
+}
+```
+
+```php fetchField()
+// Returns a single scalar value (first column of first row), or false
+$count = $dbr->newSelectQueryBuilder()
+    ->select( 'COUNT(*)' )
+    ->from( 'revision' )
+    ->where( [ 'rev_page' => $pageId ] )
+    ->caller( __METHOD__ )
+    ->fetchField();
+```
+
+```php fetchFieldValues()
+// Returns a flat array of values from a single column
+$titles = $dbr->newSelectQueryBuilder()
+    ->select( 'page_title' )
+    ->from( 'page' )
+    ->where( [ 'page_namespace' => NS_CATEGORY ] )
+    ->caller( __METHOD__ )
+    ->fetchFieldValues();
+// $titles is [ 'Foo', 'Bar', 'Baz', ... ]
+```
+
+</CodeGroup>
+
+### WHERE clauses
+
+The `where()` method accepts an associative array for equality conditions, which is the most common case:
+
+```php
+// Equality: page_namespace = 0 AND page_is_redirect = 0
+->where( [ 'page_namespace' => 0, 'page_is_redirect' => 0 ] )
+```
+
+For more complex conditions, pass a string or use `IExpression`:
+
+```php
+// IN list
+->where( [ 'page_namespace' => [ NS_MAIN, NS_TALK, NS_USER ] ] )
+
+// Raw expression (must be pre-escaped or use IDatabase methods)
+->where( [ 'rev_timestamp > ' . $dbr->addQuotes( $cutoff ) ] )
+
+// Null check
+->where( [ 'wl_notificationtimestamp' => null ] )
+
+// NOT NULL
+->where( $dbr->expr( 'wl_notificationtimestamp', '!=', null ) )
+```
+
+<Warning>
+  Never interpolate raw user input into SQL strings. Always use `addQuotes()` for scalar values or pass them through the array syntax which handles escaping automatically.
+</Warning>
+
+### Joins
+
+Use `join()`, `leftJoin()`, or `straightJoin()` to add joined tables:
+
+```php
+$rows = $dbr->newSelectQueryBuilder()
+    ->select( [ 'p.page_title', 'a.actor_name', 'r.rev_timestamp' ] )
+    ->from( 'revision', 'r' )
+    ->join( 'page', 'p', 'p.page_id = r.rev_page' )
+    ->join( 'actor', 'a', 'a.actor_id = r.rev_actor' )
+    ->where( [ 'r.rev_page' => $pageId ] )
+    ->orderBy( 'r.rev_timestamp', SelectQueryBuilder::SORT_DESC )
+    ->limit( 10 )
+    ->caller( __METHOD__ )
+    ->fetchResultSet();
+```
+
+For optional matches, use `leftJoin()`:
+
+```php
+$dbr->newSelectQueryBuilder()
+    ->select( [ 'p.page_id', 'p.page_title', 'pp.pp_value' ] )
+    ->from( 'page', 'p' )
+    ->leftJoin( 'page_props', 'pp', [ 'pp.pp_page = p.page_id', 'pp.pp_propname' => 'wikibase_item' ] )
+    ->where( [ 'p.page_namespace' => NS_MAIN ] )
+    ->caller( __METHOD__ )
+    ->fetchResultSet();
+```
+
+### Ordering, limits, and offsets
+
+```php
+$dbr->newSelectQueryBuilder()
+    ->select( [ 'rc_id', 'rc_title', 'rc_timestamp' ] )
+    ->from( 'recentchanges' )
+    ->orderBy( 'rc_timestamp', SelectQueryBuilder::SORT_DESC )
+    ->limit( 25 )
+    ->offset( 50 )    // skip the first 50 results
+    ->caller( __METHOD__ )
+    ->fetchResultSet();
+```
+
+<Tip>
+  Always specify `limit()` in queries that could match large numbers of rows. Unindexed queries that scan entire tables are generally not acceptable in MediaWiki code.
+</Tip>
+
+### GROUP BY
+
+```php
+$dbr->newSelectQueryBuilder()
+    ->select( [ 'cat_title', 'COUNT(*) AS member_count' ] )
+    ->from( 'categorylinks' )
+    ->join( 'linktarget', 'lt', 'lt.lt_id = cl_target_id' )
+    ->groupBy( 'lt.lt_title' )
+    ->orderBy( 'member_count', SelectQueryBuilder::SORT_DESC )
+    ->limit( 20 )
+    ->caller( __METHOD__ )
+    ->fetchResultSet();
+```
+
+<Warning>
+  MySQL allows `GROUP BY` without listing all non-aggregate `SELECT` columns; PostgreSQL does not. Always list every non-aggregate column in `groupBy()`. Never use `SELECT *` with `GROUP BY`.
+</Warning>
+
+### DISTINCT
+
+```php
+$dbr->newSelectQueryBuilder()
+    ->select( 'page_namespace' )
+    ->distinct()
+    ->from( 'page' )
+    ->caller( __METHOD__ )
+    ->fetchFieldValues();
+```
+
+## INSERT queries
+
+Use `IDatabase::newInsertQueryBuilder()` for INSERT operations.
+
+### Single-row insert
+
+```php
+$dbw = $dbProvider->getPrimaryDatabase();
+$dbw->newInsertQueryBuilder()
+    ->insertInto( 'watchlist' )
+    ->row( [
+        'wl_user'      => $userId,
+        'wl_namespace' => $namespace,
+        'wl_title'     => $title,
+        'wl_notificationtimestamp' => null,
+    ] )
+    ->caller( __METHOD__ )
+    ->execute();
+```
+
+### Multi-row insert
+
+```php
+$rows = [];
+foreach ( $pagesToWatch as $page ) {
+    $rows[] = [
+        'wl_user'      => $userId,
+        'wl_namespace' => $page->getNamespace(),
+        'wl_title'     => $page->getDBkey(),
+        'wl_notificationtimestamp' => null,
+    ];
+}
+
+$dbw->newInsertQueryBuilder()
+    ->insertInto( 'watchlist' )
+    ->rows( $rows )
+    ->caller( __METHOD__ )
+    ->execute();
+```
+
+### INSERT IGNORE
+
+Use `ignore()` to silently skip rows that would violate a unique key:
+
+```php
+$dbw->newInsertQueryBuilder()
+    ->insertInto( 'categorylinks' )
+    ->ignore()
+    ->row( [
+        'cl_from'      => $pageId,
+        'cl_target_id' => $targetId,
+        'cl_sortkey'   => $sortKey,
+        'cl_timestamp' => $dbw->timestamp(),
+        'cl_type'      => 'page',
+        'cl_collation_id' => 0,
+        'cl_sortkey_prefix' => '',
+    ] )
+    ->caller( __METHOD__ )
+    ->execute();
+
+// Check if the row was actually inserted
+$inserted = $dbw->affectedRows() > 0;
+```
+
+<Tip>
+  Prefer `INSERT IGNORE` with a unique index and `affectedRows()` over checking for existence first, then inserting. This avoids a race condition between the check and the write.
+</Tip>
+
+## UPDATE queries
+
+Use `IDatabase::newUpdateQueryBuilder()` for UPDATE operations.
+
+### Basic update
+
+```php
+$dbw = $dbProvider->getPrimaryDatabase();
+$dbw->newUpdateQueryBuilder()
+    ->update( 'watchlist' )
+    ->set( [ 'wl_notificationtimestamp' => null ] )
+    ->where( [ 'wl_user' => $userId, 'wl_namespace' => $namespace, 'wl_title' => $title ] )
+    ->caller( __METHOD__ )
+    ->execute();
+```
+
+### Conditional update
+
+Combine existence checks into the `WHERE` clause rather than using a separate SELECT before the UPDATE:
+
+```php
+$dbw->newUpdateQueryBuilder()
+    ->update( 'page' )
+    ->set( [ 'page_touched' => $dbw->timestamp() ] )
+    ->where( [
+        'page_id'     => $pageId,
+        'page_latest' => $expectedRevId,   // only update if not concurrently changed
+    ] )
+    ->caller( __METHOD__ )
+    ->execute();
+
+$updated = $dbw->affectedRows() > 0;
+if ( !$updated ) {
+    // Another process updated the row first; handle the conflict
+}
+```
+
+### Incrementing a counter
+
+```php
+$dbw->newUpdateQueryBuilder()
+    ->update( 'category' )
+    ->set( [ 'cat_pages = cat_pages + 1' ] )
+    ->where( [ 'cat_title' => $categoryName ] )
+    ->caller( __METHOD__ )
+    ->execute();
+```
+
+## DELETE queries
+
+Use `IDatabase::newDeleteQueryBuilder()` for DELETE operations.
+
+```php
+$dbw = $dbProvider->getPrimaryDatabase();
+$dbw->newDeleteQueryBuilder()
+    ->deleteFrom( 'watchlist' )
+    ->where( [ 'wl_user' => $userId ] )
+    ->caller( __METHOD__ )
+    ->execute();
+```
+
+Delete with a compound condition:
+
+```php
+$dbw->newDeleteQueryBuilder()
+    ->deleteFrom( 'recentchanges' )
+    ->where( [
+        'rc_timestamp < ' . $dbw->addQuotes( $cutoffTimestamp ),
+    ] )
+    ->caller( __METHOD__ )
+    ->execute();
+```
+
+## Handling NULL values
+
+Null checks in the array-style `where()` generate `IS NULL` / `IS NOT NULL` SQL automatically:
+
+```php
+// WHERE wl_notificationtimestamp IS NULL
+->where( [ 'wl_notificationtimestamp' => null ] )
+
+// WHERE wl_notificationtimestamp IS NOT NULL
+->where( $dbr->expr( 'wl_notificationtimestamp', '!=', null ) )
+```
+
+When inserting or updating, pass `null` directly in the value array:
+
+```php
+->row( [ 'wl_notificationtimestamp' => null ] )
+->set( [ 'wl_notificationtimestamp' => null ] )
+```
+
+## Quoting and escaping
+
+The query builders escape values passed through their array APIs automatically. When you need to construct a raw expression, use the escaping methods on `IDatabase`:
+
+```php
+// Escape a scalar value for use in a raw expression
+$quoted = $dbr->addQuotes( $userInput );
+->where( [ 'rc_timestamp > ' . $quoted ] )
+
+// Get a properly prefixed table name for use in raw SQL
+$table = $dbr->tableName( 'page' );
+
+// Get a MediaWiki timestamp (YYYYMMDDHHMMSS)
+$ts = $dbw->timestamp();          // current time
+$ts = $dbw->timestamp( $unixTs ); // convert a Unix timestamp
+```
+
+<Warning>
+  Never use raw user input directly in SQL strings. Always use `addQuotes()` for values, and let the query builder handle table name prefixes via `tableName()`. Failing to do so creates SQL injection vulnerabilities.
+</Warning>
+
+## The legacy IDatabase::select() interface
+
+Older MediaWiki code uses `IDatabase::select()` directly. You will encounter this in existing code; new code should use the query builders instead.
+
+```php
+// Legacy style — avoid in new code
+$res = $dbr->select(
+    'page',                                         // table
+    [ 'page_id', 'page_title' ],                   // fields
+    [ 'page_namespace' => NS_MAIN ],               // WHERE
+    __METHOD__,                                     // caller
+    [ 'ORDER BY' => 'page_title', 'LIMIT' => 50 ]  // options
+);
+
+// Equivalent query builder style — prefer this
+$res = $dbr->newSelectQueryBuilder()
+    ->select( [ 'page_id', 'page_title' ] )
+    ->from( 'page' )
+    ->where( [ 'page_namespace' => NS_MAIN ] )
+    ->orderBy( 'page_title', SelectQueryBuilder::SORT_ASC )
+    ->limit( 50 )
+    ->caller( __METHOD__ )
+    ->fetchResultSet();
+```
+
+## Performance guidelines
+
+<CardGroup cols={2}>
+  <Card title="Use indexes" icon="bolt">
+    Every query run during a web request must use an index. Unindexed queries that grow with table size are not accepted. Special pages may use `QueryPage` (which runs in `$wgMiserMode`) for expensive unindexed queries.
+  </Card>
+  <Card title="Avoid COUNT(*)" icon="exclamation-triangle">
+    `COUNT(*)` is O(N) — it counts every matching row. For large tables this is extremely slow. Use estimated counts, index-covered counts, or cached values instead.
+  </Card>
+  <Card title="Avoid SELECT *" icon="table">
+    Always name the columns you need. `SELECT *` wastes bandwidth, breaks `GROUP BY` on PostgreSQL, and makes query behavior unpredictable when schema changes add columns.
+  </Card>
+  <Card title="Batch large writes" icon="layer-group">
+    Split bulk inserts or updates into one-row-at-a-time loops. Multi-row `INSERT ... SELECT` serializes on replicas and causes replication lag. Do the SELECT first, then insert row by row.
+  </Card>
+</CardGroup>
+
+### Query groups for expensive reads
+
+For queries expected to run for more than one second on large wikis, use the `vslow` query group to route them to dedicated replica hosts and keep them from degrading general traffic:
+
+```php
+$dbr = $dbProvider->getReplicaDatabase( false, 'vslow' );
+$res = $dbr->newSelectQueryBuilder()
+    ->select( [ 'page_id', 'page_title' ] )
+    ->from( 'page' )
+    ->where( [ 'page_namespace' => NS_MAIN ] )
+    // ... expensive conditions that cannot use an index ...
+    ->caller( __METHOD__ )
+    ->fetchResultSet();
+```
+
+## Raw SQL
+
+For complex queries not expressible with the query builders, use `IDatabase::query()`:
+
+```php
+// Use tableName() to get the properly prefixed table name
+$pageTable = $dbr->tableName( 'page' );
+$revTable  = $dbr->tableName( 'revision' );
+
+$sql = "SELECT p.page_id, COUNT(r.rev_id) AS rev_count
+        FROM $pageTable p
+        JOIN $revTable r ON r.rev_page = p.page_id
+        WHERE p.page_namespace = 0
+        GROUP BY p.page_id
+        ORDER BY rev_count DESC
+        LIMIT 10";
+
+$res = $dbr->query( $sql, __METHOD__ );
+foreach ( $res as $row ) {
+    echo "{$row->page_id}: {$row->rev_count} revisions\n";
+}
+```
+
+<Warning>
+  Raw SQL bypasses all cross-database abstraction. If you use `query()`, you must test on all supported backends (MySQL, PostgreSQL, SQLite) or explicitly document which backends you support.
+</Warning>

@@ -1,0 +1,338 @@
+---
+title: "Maintenance Scripts"
+description: "CLI maintenance scripts for database updates, cache management, and administration."
+---
+
+MediaWiki ships with a comprehensive set of PHP maintenance scripts designed to be run from the command line. All scripts are invoked through the **maintenance runner**, introduced in MediaWiki 1.40:
+
+```bash
+php maintenance/run.php <scriptname> [options]
+```
+
+Scripts can be referred to by their simple name (without `.php`), by class name, or by path. On most systems you can also use the shorthand `maintenance/run` directly.
+
+<Note>
+Direct invocation (`php maintenance/update.php`) is deprecated since 1.40 and will produce a warning. Always use `maintenance/run.php` on 1.40+.
+</Note>
+
+## Getting Help
+
+```bash
+# List all options for the runner itself
+php maintenance/run.php --help
+
+# Get help for a specific script
+php maintenance/run.php update --help
+```
+
+---
+
+## Database Scripts
+
+### update.php — Apply Database Updates
+
+Run all pending database schema updates after upgrading MediaWiki or installing extensions.
+
+```bash
+php maintenance/run.php update
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--quick` | Skip the 5-second countdown before starting |
+| `--schema <file>` | Output SQL to a file instead of executing it (useful when a DBA must apply changes) |
+| `--noschema` | Run only non-schema updates (data migrations) |
+| `--force` | Override when `$wgAllowSchemaUpdates` is set to false |
+| `--doshared` | Also update shared tables |
+| `--skip-external-dependencies` | Skip Composer dependency checks |
+| `--skip-config-validation` | Skip configuration validation |
+
+```bash
+# Standard upgrade run
+php maintenance/run.php update --quick
+
+# Output schema changes to a file for DBA review
+php maintenance/run.php update --schema /tmp/schema-changes.sql
+
+# Apply only data migrations (schema already applied by DBA)
+php maintenance/run.php update --noschema
+```
+
+### install.php — Initial Installation
+
+Provides a CLI-based MediaWiki installation that creates the database schema and writes `LocalSettings.php`.
+
+```bash
+php maintenance/run.php install \
+  --dbtype mysql \
+  --dbserver localhost \
+  --dbname my_wiki \
+  --dbuser wikiuser \
+  --dbpass secret \
+  --pass adminpassword \
+  "My Wiki" AdminUser
+```
+
+**Key options:**
+
+| Option | Description |
+|--------|-------------|
+| `--dbtype` | Database type: `mysql`, `postgres`, or `sqlite` |
+| `--dbserver` | Database host (default: `localhost`) |
+| `--dbname` | Database name (default: `my_wiki`) |
+| `--dbuser` | Database user for normal operations |
+| `--dbpass` | Database password |
+| `--pass` | Password for the initial administrator account |
+| `--lang` | Interface language (default: `en`) |
+| `--confpath` | Where to write `LocalSettings.php` (default: `$IP`) |
+| `--env-checks` | Run environment checks only, make no changes |
+| `--with-extensions` | Detect and include installed extensions |
+
+---
+
+## Job Queue
+
+### runJobs.php — Process the Job Queue
+
+Runs pending background jobs from the job queue. See [Job Queue](/operations/jobs) for full documentation.
+
+```bash
+# Run all pending jobs
+php maintenance/run.php runJobs
+
+# Run at most 100 jobs of type htmlCacheUpdate
+php maintenance/run.php runJobs --maxjobs 100 --type htmlCacheUpdate
+
+# Run for up to 60 seconds across 4 parallel processes
+php maintenance/run.php runJobs --maxtime 60 --procs 4
+```
+
+---
+
+## Cache Management
+
+### rebuildall.php — Rebuild Links, Text Index, and Recent Changes
+
+Runs a full rebuild of the link tables, text search index, and recent changes log.
+
+```bash
+php maintenance/run.php rebuildall
+```
+
+<Warning>
+This script can take a very long time on large wikis. Run it during low-traffic periods and consider using more targeted scripts like `refreshLinks.php` instead.
+</Warning>
+
+### refreshLinks.php — Rebuild Link Tables
+
+Refreshes the `pagelinks`, `templatelinks`, `imagelinks`, and related tables by re-parsing pages. Useful after bulk imports or schema changes.
+
+```bash
+# Refresh all pages
+php maintenance/run.php refreshLinks
+
+# Only fix pages in namespace 0 (main)
+php maintenance/run.php refreshLinks --namespace 0
+
+# Only fix redirect targets
+php maintenance/run.php refreshLinks --redirects-only
+
+# Only fix pages that have been touched since the last update
+php maintenance/run.php refreshLinks --touched-only
+
+# Delete links from pages that no longer exist
+php maintenance/run.php refreshLinks --dfn-only
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--namespace <ns>` | Only fix pages in this namespace number |
+| `--category <cat>` | Only fix pages in this category |
+| `--redirects-only` | Only fix redirect targets |
+| `--touched-only` | Only fix pages touched after the last update |
+| `--dfn-only` | Delete links from nonexistent articles only |
+| `--new-only` | Only affect articles with a single edit |
+| `-v` | Verbose output |
+
+---
+
+## Block Management
+
+### purgeExpiredBlocks.php — Clean Expired Blocks
+
+Removes blocks from the database whose expiry time has passed. This is normally triggered automatically, but can be run manually to clean up a backlog.
+
+```bash
+php maintenance/run.php purgeExpiredBlocks
+```
+
+---
+
+## User Management
+
+### createAndPromote.php — Create and Promote a User
+
+Creates a new user account and optionally adds it to administrative groups. Supports `sysop`, `bureaucrat`, `interface-admin`, and `bot` roles.
+
+```bash
+# Create a sysop account
+php maintenance/run.php createAndPromote --sysop AdminUser password123
+
+# Create a bot account
+php maintenance/run.php createAndPromote --bot BotUser botpassword
+
+# Create with a specific email address
+php maintenance/run.php createAndPromote --sysop --email admin@example.com AdminUser password123
+
+# Promote an existing account (use --force)
+php maintenance/run.php createAndPromote --sysop --force ExistingUser newpassword
+
+# Add to custom groups
+php maintenance/run.php createAndPromote --custom-groups "reviewer,patroller" EditorUser pass
+```
+
+**Available role flags:** `--sysop`, `--bureaucrat`, `--interface-admin`, `--bot`
+
+### changePassword.php — Change a User's Password
+
+Resets the password for an existing user account. Useful for emergency administrator access recovery.
+
+```bash
+# Change password by username
+php maintenance/run.php changePassword --user AdminUser --password newpassword
+
+# Change password by user ID
+php maintenance/run.php changePassword --userid 1 --password newpassword
+
+# Read new password from stdin (avoids shell history)
+php maintenance/run.php changePassword --user AdminUser --passwordstdin
+```
+
+<Note>
+`--password` and `--passwordstdin` are mutually exclusive. Use `--passwordstdin` in automated contexts to avoid exposing passwords in process lists or shell history.
+</Note>
+
+---
+
+## Content Management
+
+### deleteBatch.php — Delete Pages in Bulk
+
+Deletes a list of pages provided via a file or stdin. Each line in the file should contain one page title.
+
+```bash
+# Delete pages listed in a file
+php maintenance/run.php deleteBatch --u "Admin" --r "Bulk cleanup" pages-to-delete.txt
+
+# Delete from stdin
+echo -e "Talk:Spam\nUser:Vandal" | php maintenance/run.php deleteBatch
+
+# Delete by page ID instead of title
+php maintenance/run.php deleteBatch --by-id page-ids.txt
+
+# Add a sleep interval between deletions (to reduce load)
+php maintenance/run.php deleteBatch --i 1 pages.txt
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--u <user>` | Username to attribute the deletions to |
+| `--r <reason>` | Deletion reason recorded in the deletion log |
+| `--i <seconds>` | Sleep interval between deletions |
+| `--by-id` | Treat the input as page IDs rather than titles |
+
+### dumpBackup.php — Create an XML Dump
+
+Exports wiki content as a MediaWiki XML dump file, compatible with the import format used by `importDump.php`.
+
+```bash
+# Dump all current revisions
+php maintenance/run.php dumpBackup --current > dump.xml
+
+# Dump all revisions of every page (full history)
+php maintenance/run.php dumpBackup --full > dump-full.xml
+
+# Dump only log events
+php maintenance/run.php dumpBackup --logs > logs.xml
+
+# Dump specific namespaces (0 = main, 4 = project)
+php maintenance/run.php dumpBackup --current --namespaces 0,4 > main-dump.xml
+
+# Dump from a page list
+php maintenance/run.php dumpBackup --current --pagelist pages.txt > selected.xml
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--current` | Dump only the latest revision of each page |
+| `--full` | Dump all revisions of every page |
+| `--logs` | Dump all log events |
+| `--namespaces <list>` | Comma-separated namespace numbers to include |
+| `--pagelist <file>` | Dump only pages listed in the file |
+| `--uploads` | Include file upload records |
+| `--include-files` | Embed file contents in the XML stream |
+| `--stub` | Omit revision text (for two-pass dumps with `dumpTextPass.php`) |
+| `--start <id>` | Start from this `page_id` |
+| `--end <id>` | Stop before this `page_id` |
+
+<Warning>
+`dumpBackup.php` is **not** a full database backup — it exports page content only. For a complete backup, also dump the database with `mysqldump` (or equivalent) and back up uploaded files.
+</Warning>
+
+---
+
+## Extension Scripts
+
+Extension maintenance scripts can be called using the extension name prefix:
+
+```bash
+# Using extension:scriptname shorthand
+php maintenance/run.php AbuseFilter:SearchFilters
+
+# Using the full class name (with dots as namespace separators)
+php maintenance/run.php MediaWiki.Extension.AbuseFilter.Maintenance.SearchFilters
+
+# Using a direct path
+php maintenance/run.php ./extensions/AbuseFilter/maintenance/SearchFilters.php
+```
+
+## Writing Custom Maintenance Scripts
+
+To create a maintenance script, subclass `Maintenance` and implement `execute()`:
+
+```php
+use MediaWiki\Maintenance\Maintenance;
+
+class MyScript extends Maintenance {
+    public function __construct() {
+        parent::__construct();
+        $this->addDescription( 'Does something useful' );
+        $this->addOption( 'dry-run', 'Simulate without making changes' );
+    }
+
+    public function execute() {
+        if ( $this->hasOption( 'dry-run' ) ) {
+            $this->output( "Dry run mode\n" );
+        }
+        // ... your logic here
+    }
+}
+
+// @codeCoverageIgnoreStart
+return MyScript::class;
+// @codeCoverageIgnoreEnd
+```
+
+Place the file in `maintenance/MyScript.php` and run it with:
+
+```bash
+php maintenance/run.php MyScript
+```

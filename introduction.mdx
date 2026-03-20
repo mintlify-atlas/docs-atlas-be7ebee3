@@ -1,0 +1,93 @@
+---
+title: "Introduction"
+description: "MediaWiki is the free, open-source wiki platform that powers Wikipedia and thousands of wikis worldwide."
+---
+
+MediaWiki is a free and open-source wiki software package written in PHP. It serves as the platform for Wikipedia and the other Wikimedia projects, used by hundreds of millions of people each month. MediaWiki is localised in over 350 languages, and its reliability and robust feature set have earned it a large and vibrant community of third-party users and developers.
+
+## What MediaWiki powers
+
+MediaWiki was created by the Wikimedia Foundation to run Wikipedia, the world's largest online encyclopedia. Today it powers:
+
+- **Wikipedia and Wikimedia projects** — Handling hundreds of millions of readers per month across dozens of language editions
+- **Enterprise wikis** — Organizations use MediaWiki for internal knowledge bases, technical documentation, and collaborative editing
+- **Community wikis** — Fan sites, open-source project wikis, and public reference sites across virtually every subject domain
+- **Government and academic sites** — Universities, research institutions, and public agencies rely on MediaWiki for public documentation
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Extensibility" icon="puzzle-piece">
+    MediaWiki is feature-rich and extensible, both through on-wiki customization and through hundreds of community-built extensions. The hook system and extension registration API allow third-party code to integrate deeply with core functionality without modifying core files.
+  </Card>
+  <Card title="Scalability" icon="chart-line">
+    MediaWiki is suitable for both small personal wikis and massive installations serving hundreds of millions of users. Its architecture supports read replicas, distributed caching (Memcached, Redis), job queues, and CDN integration.
+  </Card>
+  <Card title="Localization" icon="globe">
+    With support for over 350 languages, MediaWiki includes a mature localization system covering right-to-left scripts, Unicode normalization, plural rules, and language-specific number and date formatting via the CLDR plural rule parser (`wikimedia/cldr-plural-rule-parser`).
+  </Card>
+  <Card title="Open standards" icon="code">
+    MediaWiki exposes content through multiple interfaces: a traditional web UI, a JSON Action API (`api.php`), a RESTful REST API (`rest.php`), and a ResourceLoader asset pipeline (`load.php`). All content is licensed and exportable.
+  </Card>
+</CardGroup>
+
+MediaWiki is licensed under the **GNU General Public License, version 2 or later**. It is the result of global collaboration — the `CREDITS` file in the source tree lists hundreds of technical contributors to the project.
+
+## Who should read this documentation
+
+This documentation targets developers and technical administrators working with MediaWiki at the code level. It is organized around four primary audiences:
+
+<Tabs>
+  <Tab title="Extension developers">
+    If you are building a MediaWiki extension — adding special pages, API modules, parser functions, or new content types — start with the [Architecture Overview](/architecture) to understand the hook system and service container, then move to the extension development guides.
+
+    Key concepts:
+    - Hook system and `HookContainer` / `HookRunner`
+    - `ExtensionRegistry` and `extension.json`
+    - `MediaWikiServices` dependency injection
+    - Parser and content handler APIs
+  </Tab>
+  <Tab title="API integrators">
+    If you are building applications that read from or write to a MediaWiki installation via HTTP, MediaWiki exposes two APIs:
+
+    - **Action API** (`api.php`) — The established JSON API covering page reads, edits, searches, and administrative actions
+    - **REST API** (`rest.php`) — A newer RESTful interface following standard HTTP conventions
+
+    Start with the [Quickstart](/quickstart) to run a local instance, then explore the API reference.
+  </Tab>
+  <Tab title="Skin developers">
+    If you are customizing MediaWiki's appearance by building a skin, you will work with the `SkinFactory` service, Mustache templates, and the ResourceLoader asset pipeline. Skins are registered through the same `extension.json` mechanism as extensions and declare their assets through ResourceLoader module definitions.
+  </Tab>
+  <Tab title="System administrators">
+    If you are deploying and operating a MediaWiki installation, the [Quickstart](/quickstart) covers the two primary setup paths (Docker and manual). Supported databases are MariaDB 10.3+, MySQL 5.7+, PostgreSQL 10+, and SQLite 3.31+. For production deployments, see the official [installation guide](https://www.mediawiki.org/wiki/Special:MyLanguage/Manual:Installation_guide).
+  </Tab>
+</Tabs>
+
+## Major sections
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" href="/quickstart">
+    Get MediaWiki running locally in minutes using either Docker or the PHP built-in server with a SQLite database.
+  </Card>
+  <Card title="Architecture overview" href="/architecture">
+    Understand the request lifecycle, service container, hook system, and major subsystems like the Parser, ResourceLoader, and JobQueue.
+  </Card>
+  <Card title="API reference" href="/api-reference">
+    Browse the Action API and REST API endpoints available for integrating with MediaWiki programmatically.
+  </Card>
+  <Card title="Development guide" href="/development">
+    Set up a full development environment, run the test suite with PHPUnit, and understand the code quality tooling.
+  </Card>
+</CardGroup>
+
+## License and community
+
+MediaWiki is free software released under the **GPL-2.0-or-later** license. The project uses the following channels for community communication:
+
+| Channel | Purpose |
+|---------|---------|
+| [Wikimedia Phabricator](https://phabricator.wikimedia.org/) | Bug reports and feature requests |
+| [mediawiki-announce](https://lists.wikimedia.org/postorius/lists/mediawiki-announce.lists.wikimedia.org/) | Low-traffic release announcements |
+| [mediawiki-l](https://lists.wikimedia.org/postorius/lists/mediawiki-l.lists.wikimedia.org/) | Site admin support mailing list |
+| [wikitech-l](https://lists.wikimedia.org/postorius/lists/wikitech-l.lists.wikimedia.org/) | Developer discussion mailing list |
+| `#mediawiki` on Libera.Chat | Real-time IRC chat |

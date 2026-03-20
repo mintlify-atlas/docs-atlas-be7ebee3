@@ -1,80 +1,277 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Get MediaWiki running locally in minutes."
 ---
 
-## Get started in three steps
+This guide covers two paths to a working local MediaWiki installation: a Docker-based setup that mirrors the Wikimedia development environment, and a lightweight manual setup using PHP's built-in web server with SQLite — the fastest way to start hacking on MediaWiki code.
 
-Get your documentation site running locally and make your first customization.
+## System requirements
 
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+MediaWiki 1.46.0 requires:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="PHP" icon="php">
+    **PHP 8.2.0 or higher** with the following extensions enabled:
+    `ctype`, `dom`, `fileinfo`, `iconv`, `intl`, `json`, `libxml`, `mbstring`, `openssl`, `xml`, `xmlreader`
+  </Card>
+  <Card title="Database" icon="database">
+    One of:
+    - **MariaDB** 10.3+
+    - **MySQL** 5.7.0+
+    - **PostgreSQL** 10+
+    - **SQLite** 3.31.0+
+  </Card>
+  <Card title="Web server" icon="server">
+    Any web server capable of running PHP: Apache 2, Nginx with PHP-FPM, or PHP's built-in server (for development only).
+  </Card>
+  <Card title="Composer" icon="box">
+    **Composer 2** for dependency management. All PHP dependencies are declared in `composer.json` and must be installed before MediaWiki will run.
+  </Card>
 </CardGroup>
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  On 32-bit systems, either the `bcmath` or `gmp` PHP extension is also required. These extensions are also needed for scrambling Temporary Accounts on any architecture.
 </Note>
+
+**Recommended optional extensions** for a complete development experience:
+
+| Extension | Purpose |
+|-----------|---------|
+| `ext-apcu` | Faster web responses via in-memory caching |
+| `ext-curl` | Faster HTTP client (InstantCommons, Swift, Etcd) |
+| `ext-gd` | Image thumbnail generation for file uploads |
+| `ext-mysqli` | MySQL/MariaDB database driver |
+| `ext-pdo` | SQLite database driver |
+| `ext-pgsql` | PostgreSQL database driver |
+
+## Two setup paths
+
+<CodeGroup>
+```bash Docker quickstart
+# 1. Clone the MediaWiki source
+git clone https://gerrit.wikimedia.org/r/mediawiki/core mediawiki
+cd mediawiki
+
+# 2. Install PHP dependencies
+composer install
+
+# 3. Copy the environment template and set your user IDs
+cp .env.example .env
+printf "MW_DOCKER_UID=$(id -u)\nMW_DOCKER_GID=$(id -g)\n" >> .env
+
+# 4. Start all services (PHP-FPM, Apache, job runner)
+docker compose up -d
+
+# 5. Run the MediaWiki installer inside the container
+docker compose exec mediawiki php maintenance/run.php install \
+  --server="http://localhost:8080" \
+  --dbtype=sqlite \
+  --dbpath=cache/sqlite \
+  --scriptpath=/w \
+  --pass=dockerpass \
+  MediaWiki Admin
+```
+
+```bash Manual install (SQLite + PHP built-in server)
+# 1. Clone the MediaWiki source
+git clone https://gerrit.wikimedia.org/r/mediawiki/core mediawiki
+cd mediawiki
+
+# 2. Install PHP dependencies
+composer install
+
+# 3. Run the installer (creates LocalSettings.php, uses SQLite)
+composer mw-install:sqlite
+
+# 4. Start the development server on http://127.0.0.1:4000
+composer serve
+```
+</CodeGroup>
+
+## Docker setup
+
+<Steps>
+  <Step title="Clone and install dependencies">
+    Clone the MediaWiki repository and install all Composer dependencies. The `composer install` step fetches all packages declared in `composer.json`, including Wikimedia libraries, Parsoid, OOjs UI, and development tooling.
+
+    ```bash
+    git clone https://gerrit.wikimedia.org/r/mediawiki/core mediawiki
+    cd mediawiki
+    composer install
+    ```
+  </Step>
+
+  <Step title="Configure the environment">
+    The Docker Compose setup reads from a `.env` file. Create one and set the Docker user/group IDs so that files written inside containers are owned by your user on the host:
+
+    ```bash
+    cp .env.example .env
+    printf "MW_DOCKER_UID=$(id -u)\nMW_DOCKER_GID=$(id -g)\n" >> .env
+    ```
+
+    The `docker-compose.yml` defines three services:
+
+    | Service | Image | Role |
+    |---------|-------|------|
+    | `mediawiki` | `bookworm-php83-fpm:1.0.0-s1` | PHP 8.3 FPM application server |
+    | `mediawiki-web` | `bookworm-apache2:1.0.1` | Apache 2 reverse proxy, port `8080` |
+    | `mediawiki-jobrunner` | `bookworm-php83-jobrunner:1.0.0-s1` | Background job runner |
+
+    The repository root is mounted at `/var/www/html/w` inside each container. SQLite data and logs are stored in the `cache/` directory.
+  </Step>
+
+  <Step title="Start the services">
+    ```bash
+    docker compose up -d
+    ```
+
+    Confirm all three containers are running:
+
+    ```bash
+    docker compose ps
+    ```
+  </Step>
+
+  <Step title="Run the installer">
+    The CLI installer (`maintenance/install.php`) creates the database schema and generates `LocalSettings.php`. Run it inside the `mediawiki` container:
+
+    ```bash
+    docker compose exec mediawiki php maintenance/run.php install \
+      --server="http://localhost:8080" \
+      --dbtype=sqlite \
+      --dbpath=cache/sqlite \
+      --scriptpath=/w \
+      --lang=en \
+      --pass=dockerpass \
+      MediaWiki Admin
+    ```
+
+    Supported `--dbtype` values are `mysql`, `postgres`, and `sqlite`. For MySQL/MariaDB or PostgreSQL, also supply `--dbserver`, `--dbname`, `--dbuser`, and `--dbpass`.
+  </Step>
+
+  <Step title="Verify the installation">
+    Open [http://localhost:8080/w/index.php](http://localhost:8080/w/index.php) in your browser. You should see the MediaWiki main page. Log in with username `Admin` and password `dockerpass`.
+
+    Confirm the Action API responds:
+
+    ```bash
+    curl "http://localhost:8080/w/api.php?action=query&meta=siteinfo&format=json&formatversion=2"
+    ```
+  </Step>
+</Steps>
+
+## Manual install with `composer serve`
+
+<Steps>
+  <Step title="Clone and install dependencies">
+    ```bash
+    git clone https://gerrit.wikimedia.org/r/mediawiki/core mediawiki
+    cd mediawiki
+    composer install
+    ```
+  </Step>
+
+  <Step title="Run the SQLite installer">
+    The `mw-install:sqlite` Composer script runs the CLI installer with flags suited for local development:
+
+    ```bash
+    composer mw-install:sqlite
+    ```
+
+    This is equivalent to:
+
+    ```bash
+    php maintenance/run.php install \
+      --server=http://localhost:4000 \
+      --dbtype=sqlite \
+      --with-developmentsettings \
+      --dbpath=cache/ \
+      --scriptpath= \
+      --pass=adminpassword \
+      MediaWiki Admin
+    ```
+
+    The `--with-developmentsettings` flag enables verbose errors and the debug toolbar. The SQLite database file is created in `cache/`.
+  </Step>
+
+  <Step title="Start the development server">
+    ```bash
+    composer serve
+    ```
+
+    This starts PHP's built-in web server on `http://127.0.0.1:4000` with 8 worker processes (`PHP_CLI_SERVER_WORKERS=8`). Logs are written to `logs/` and mirrored to stderr.
+
+    ```
+    PHP 8.2.x Development Server (http://127.0.0.1:4000) started
+    ```
+
+    <Warning>
+      PHP's built-in server is not suitable for production. Use it only for local development.
+    </Warning>
+  </Step>
+
+  <Step title="Verify the installation">
+    Open [http://127.0.0.1:4000](http://127.0.0.1:4000) in your browser. Log in with username `Admin` and password `adminpassword`.
+
+    Test the Action API:
+
+    ```bash
+    curl "http://127.0.0.1:4000/api.php?action=query&meta=siteinfo&format=json&formatversion=2"
+    ```
+
+    Test the REST API:
+
+    ```bash
+    curl "http://127.0.0.1:4000/rest.php/v1/page/Main_Page"
+    ```
+  </Step>
+</Steps>
+
+## Development environment
+
+After the basic install, a few more steps give you a complete development setup:
+
+<Steps>
+  <Step title="Run the unit test suite">
+    PHPUnit is included in the dev dependencies. Run the unit tests (no database required):
+
+    ```bash
+    composer phpunit:unit
+    ```
+
+    Run the full test suite (requires a database):
+
+    ```bash
+    composer phpunit
+    ```
+  </Step>
+
+  <Step title="Run code quality checks">
+    ```bash
+    # PHP syntax check
+    composer lint .
+
+    # PHPCS code style (MediaWiki coding standards)
+    composer phpcs .
+
+    # Run all checks
+    composer test
+    ```
+  </Step>
+
+  <Step title="Use the maintenance runner">
+    The `maintenance` Composer script is a shorthand for `php maintenance/run.php`. Use it to run any maintenance script:
+
+    ```bash
+    # Rebuild the localisation cache
+    composer maintenance rebuildLocalisationCache.php
+
+    # Apply database schema changes after a code update
+    composer maintenance update.php
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  For Xdebug and XHProf profiling in the Docker setup, set `XDEBUG_ENABLE=true` and `XHPROF_ENABLE=true` in your `.env` file. Both are enabled by default in `docker-compose.yml`.
+</Tip>

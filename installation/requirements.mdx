@@ -1,0 +1,167 @@
+---
+title: "System Requirements"
+description: "PHP, database, and web server requirements for MediaWiki."
+---
+
+MediaWiki 1.46 requires a web server with PHP, a supported database, and a small set of PHP extensions. This page describes the minimum and recommended requirements.
+
+<Warning>
+  Always back up your database before attempting to install or upgrade MediaWiki.
+</Warning>
+
+## PHP
+
+MediaWiki 1.46 requires **PHP 8.2.0 or higher**. PHP versions below 8.2 are no longer supported by the PHP Group and will not receive security or bug fix updates.
+
+On 32-bit systems, either the `bcmath` or `gmp` extension is also required for scrambling Temporary Accounts.
+
+### Required PHP Extensions
+
+All of the following extensions must be enabled. Most PHP distributions include them by default.
+
+| Extension | Purpose |
+|---|---|
+| `calendar` | Calendar conversion functions |
+| `ctype` | Character type checking (`ctype_digit`, etc.) |
+| `dom` | XML DOM manipulation |
+| `fileinfo` | MIME type detection for file uploads |
+| `iconv` | Character set conversion |
+| `intl` | Internationalization and locale support |
+| `json` | JSON encoding and decoding |
+| `libxml` | XML parsing foundation |
+| `mbstring` | Multibyte string handling |
+| `openssl` | Cryptography, HTTPS client support |
+| `xml` | Core XML parsing (`xml_parser_create`, etc.) |
+| `xmlreader` | Streaming XML reading |
+
+### Recommended PHP Extensions
+
+These extensions are optional but strongly recommended for performance and functionality:
+
+| Extension | Benefit |
+|---|---|
+| `apcu` | Faster web responses overall |
+| `bcmath` | Increased performance; required on 32-bit systems |
+| `curl` | Faster HTTP services (InstantCommons, Swift, Etcd) |
+| `exif` | Processing EXIF metadata in uploaded images |
+| `gd` | Thumbnail generation for file uploads |
+| `gmp` | Increased performance; alternative to `bcmath` on 32-bit |
+| `igbinary` | Faster serialization via igbinary |
+| `imagick` | ImageMagick integration for image manipulation |
+| `memcached` | Memcached caching backend |
+| `mysqli` | MySQL and MariaDB database driver |
+| `pdo` | SQLite database driver |
+| `pgsql` | PostgreSQL database driver |
+| `posix` | CLI concurrent processing (e.g. `runJobs.php`) |
+| `pcntl` | CLI concurrent processing (`runJobs.php`, `rebuildLocalisationCache.php`) |
+| `readline` | CLI history and autocomplete (`eval.php` and other REPLs) |
+| `redis` | Redis caching backend |
+| `sockets` | CLI concurrent processing (`rebuildLocalisationCache.php`) |
+| `wikidiff2` | Faster text difference engine |
+| `zlib` | GZIP compression for `SqlBagOStuff`, `$wgCompressRevisions`, `$wgUseFileCache` |
+
+## Database
+
+One of the following database servers is required:
+
+<CardGroup cols={2}>
+  <Card title="MariaDB 10.3+" icon="database">
+    The recommended choice for most deployments. Fully supported and widely used by Wikimedia.
+  </Card>
+  <Card title="MySQL 5.7.0+" icon="database">
+    Supported alongside MariaDB. Requires the `mysqli` PHP extension.
+  </Card>
+  <Card title="PostgreSQL 10+" icon="database">
+    Supported for production use. Requires the `pgsql` PHP extension.
+  </Card>
+  <Card title="SQLite 3.31.0+" icon="database">
+    Suitable for development and small wikis. Requires the `pdo` PHP extension.
+  </Card>
+</CardGroup>
+
+## Web Server
+
+MediaWiki runs on Apache, Nginx, or PHP's built-in development server.
+
+<Tabs>
+  <Tab title="Apache">
+    Apache 2.4+ with `mod_php` or PHP-FPM is the most common production setup.
+
+    Enable `mod_rewrite` for clean URLs:
+
+    ```bash
+    a2enmod rewrite
+    ```
+
+    A basic virtual host configuration:
+
+    ```apacheconf
+    <VirtualHost *:80>
+        ServerName wiki.example.com
+        DocumentRoot /var/www/html/wiki
+
+        <Directory /var/www/html/wiki>
+            Options FollowSymLinks
+            AllowOverride All
+            Require all granted
+        </Directory>
+    </VirtualHost>
+    ```
+
+    MediaWiki ships with an `.htaccess` file that handles URL rewriting when `AllowOverride All` is set.
+  </Tab>
+  <Tab title="Nginx">
+    Nginx with PHP-FPM is a popular alternative, particularly for high-traffic wikis.
+
+    A basic server block:
+
+    ```nginx
+    server {
+        listen 80;
+        server_name wiki.example.com;
+        root /var/www/html/wiki;
+        index index.php;
+
+        location / {
+            try_files $uri $uri/ @rewrite;
+        }
+
+        location @rewrite {
+            rewrite ^/(.*)$ /index.php?title=$1&$args;
+        }
+
+        location ~ \.php$ {
+            fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+            fastcgi_index index.php;
+            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            include fastcgi_params;
+        }
+
+        location ~* ^/w/(cache|includes|languages|maintenance|serialized|tests)/ {
+            deny all;
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="PHP Built-in Server">
+    PHP's built-in web server is suitable for local development only. It is not for production use.
+
+    The `composer serve` script starts it on `http://127.0.0.1:4000` with 8 workers:
+
+    ```bash
+    composer serve
+    ```
+
+    This sets `MW_LOG_DIR=logs`, `MW_LOG_STDERR=1`, and `PHP_CLI_SERVER_WORKERS=8`.
+  </Tab>
+</Tabs>
+
+## Memory and Disk
+
+- **PHP memory limit**: 128 MB minimum; 256 MB or more recommended for wikis with file uploads and extensions.
+- **Disk space**: At least 200 MB for the MediaWiki application files. Additional space is required for file uploads, database files (SQLite), and log files.
+- **Composer dependencies**: The `vendor/` directory after `composer install` is approximately 150–200 MB.
+
+<Note>
+  If you are using SQLite, allocate sufficient disk space on the volume where `$wgSQLiteDataDir` (or the `--dbpath` passed to the installer) resides, as the entire database is stored as a single file.
+</Note>

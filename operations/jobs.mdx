@@ -1,0 +1,301 @@
+---
+title: "Job Queue"
+description: "Background job processing: running jobs, configuring the queue, and creating custom jobs."
+---
+
+The MediaWiki job queue is a deferred task system that moves expensive or time-sensitive operations out of the web request cycle. When a user saves a page, for example, refreshing the HTML cache of every page that transcluded that page would be too slow to do inline — so MediaWiki enqueues a job and processes it asynchronously.
+
+## Architecture
+
+The job queue system has four main components:
+
+<CardGroup cols={2}>
+  <Card title="Job" icon="gear">
+    A unit of deferred work. Each job has a **type**, a target **title**, and a **parameters** array. Jobs subclass `MediaWiki\JobQueue\Job` and implement a `run()` method.
+  </Card>
+  <Card title="JobQueue" icon="list">
+    A per-type queue backed by a storage medium (database or Redis). Each job type has its own queue, configured independently.
+  </Card>
+  <Card title="JobQueueGroup" icon="layer-group">
+    Aggregates all per-type queues for a wiki. Used to enqueue jobs without knowing which backend a specific type uses.
+  </Card>
+  <Card title="JobRunner" icon="play">
+    The execution engine, invoked by `runJobs.php` or triggered inline via `$wgJobRunRate`. Dequeues and runs jobs, handling retries on failure.
+  </Card>
+</CardGroup>
+
+Each job queue backend guarantees **at-least-once execution** — a job will run at least once, but may run more than once if the runner crashes before acknowledging completion. Job implementations should therefore be **idempotent**.
+
+---
+
+## Built-in Job Types
+
+MediaWiki core ships the following job types in `includes/JobQueue/Jobs/`:
+
+| Job Type | Class | Purpose |
+|----------|-------|---------|
+| `htmlCacheUpdate` | `HTMLCacheUpdateJob` | Purges the HTML/file cache for all pages that link to or use a changed page or file |
+| `refreshLinks` | `RefreshLinksJob` | Updates `pagelinks`, `templatelinks`, and related link tables after a page is edited |
+| `categoryMembershipChange` | `CategoryMembershipChangeJob` | Updates category membership when a page is added to or removed from a category |
+| `cdnPurge` | `CdnPurgeJob` | Sends purge requests to CDN/squid servers for changed URLs |
+| `doubleRedirect` | `DoubleRedirectJob` | Fixes double redirects after a page is moved |
+| `uploadFromUrl` | `UploadFromUrlJob` | Handles asynchronous file upload from a URL |
+| `assembleUploadChunks` | `AssembleUploadChunksJob` | Reassembles chunked file uploads |
+| `publishStashedFile` | `PublishStashedFileJob` | Publishes a file from the upload stash |
+| `revertedTagUpdate` | `RevertedTagUpdateJob` | Applies "reverted" tags to edits that were reverted |
+| `parsoidCachePrewarm` | `ParsoidCachePrewarmJob` | Pre-warms the Parsoid parse cache for a page |
+| `thumbnailRender` | `ThumbnailRenderJob` | Pre-renders image thumbnails |
+| `null` | `NullJob` | A no-op job used for testing |
+
+---
+
+## Running Jobs
+
+### runJobs.php
+
+The primary way to process jobs is via the `runJobs.php` maintenance script:
+
+```bash
+# Run all pending jobs until the queue is empty
+php maintenance/run.php runJobs
+
+# Run at most 500 jobs
+php maintenance/run.php runJobs --maxjobs 500
+
+# Run for at most 60 seconds of wall-clock time
+php maintenance/run.php runJobs --maxtime 60
+
+# Run only jobs of a specific type
+php maintenance/run.php runJobs --type htmlCacheUpdate
+
+# Use 4 parallel worker processes
+php maintenance/run.php runJobs --procs 4
+
+# Ignore throttling limits
+php maintenance/run.php runJobs --nothrottle
+
+# Output a JSON summary instead of human-readable text
+php maintenance/run.php runJobs --result json
+
+# Stay running and wait for new jobs instead of exiting
+php maintenance/run.php runJobs --wait
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--maxjobs <n>` | Stop after running this many jobs |
+| `--maxtime <seconds>` | Stop after this many wall-clock seconds |
+| `--type <type>` | Only run jobs of the given type |
+| `--procs <n>` | Number of parallel worker processes (1–1000) |
+| `--nothrottle` | Ignore `$wgJobTypeConf` throttle configuration |
+| `--result json` | Print a JSON summary on exit |
+| `--wait` | Block waiting for new jobs rather than exiting |
+
+### Inline Job Execution
+
+By default, MediaWiki also runs a small number of jobs inline at the end of web requests, controlled by `$wgJobRunRate`. Set it to `0` to disable inline execution and rely entirely on `runJobs.php`.
+
+```php
+// LocalSettings.php
+
+// Run 1 job per web request on average (default)
+$wgJobRunRate = 1;
+
+// Run no jobs inline (use a cron job instead)
+$wgJobRunRate = 0;
+
+// Run 2 jobs per 10 requests on average
+$wgJobRunRate = 0.2;
+```
+
+<Tip>
+For production wikis under significant load, set `$wgJobRunRate = 0` and drive `runJobs.php` from a cron job or a dedicated worker process. This prevents slow jobs from affecting page response times.
+</Tip>
+
+### Recommended Cron Setup
+
+```bash
+# Run jobs every minute, for up to 60 seconds per invocation
+* * * * * www-data php /var/www/wiki/maintenance/run.php runJobs --maxtime 60 >> /var/log/mediawiki-jobs.log 2>&1
+```
+
+---
+
+## Monitoring the Queue
+
+### showJobs.php
+
+Displays the number of pending jobs, optionally broken down by type.
+
+```bash
+# Show total count of pending jobs
+php maintenance/run.php showJobs
+
+# Show per-type breakdown
+php maintenance/run.php showJobs --group
+
+# List individual jobs of a specific type
+php maintenance/run.php showJobs --list --type htmlCacheUpdate
+
+# Filter by job state: unclaimed, delayed, claimed, abandoned
+php maintenance/run.php showJobs --list --status unclaimed
+
+# Limit the number of jobs listed
+php maintenance/run.php showJobs --list --limit 50
+```
+
+---
+
+## Configuring Queue Backends
+
+By default, jobs are stored in the `job` table in the wiki's primary database (`JobQueueDB`). For high-traffic wikis, Redis provides better performance and monitoring options.
+
+### Database Backend (Default)
+
+No additional configuration is needed — jobs are stored in the `job` table automatically.
+
+```php
+// Explicit default configuration (optional)
+$wgJobTypeConf = [
+    'default' => [
+        'class' => 'JobQueueDB',
+        'order' => 'random',
+        'claimTTL' => 3600,
+    ],
+];
+```
+
+### Redis Backend
+
+```php
+// LocalSettings.php
+$wgJobTypeConf = [
+    'default' => [
+        'class'          => 'JobQueueRedis',
+        'redisServer'    => 'localhost:6379',
+        'redisConfig'    => [ 'connectTimeout' => 2 ],
+        'claimTTL'       => 3600,
+        'order'          => 'fifo',
+        'daemonized'     => false,
+    ],
+];
+
+// Use Redis to track which queues are non-empty (optional aggregator)
+$wgJobQueueAggregator = [
+    'class'       => 'JobQueueAggregatorRedis',
+    'redisServer' => 'localhost:6379',
+    'redisConfig' => [ 'connectTimeout' => 2 ],
+];
+```
+
+### Per-Type Configuration
+
+You can route specific job types to different backends:
+
+```php
+$wgJobTypeConf = [
+    // Most jobs use the database
+    'default' => [
+        'class' => 'JobQueueDB',
+        'order' => 'random',
+    ],
+    // CDN purge jobs go to Redis for lower latency
+    'cdnPurge' => [
+        'class'       => 'JobQueueRedis',
+        'redisServer' => 'localhost:6379',
+        'order'       => 'fifo',
+        'claimTTL'    => 300,
+    ],
+];
+```
+
+---
+
+## Creating Custom Jobs
+
+To create a job in an extension, subclass `MediaWiki\JobQueue\Job` and implement `run()`:
+
+```php
+namespace MyExtension\Jobs;
+
+use MediaWiki\JobQueue\Job;
+use MediaWiki\Title\Title;
+
+class MyCustomJob extends Job {
+
+    public function __construct( Title $title, array $params ) {
+        parent::__construct( 'myCustomJob', $title, $params );
+    }
+
+    /**
+     * @return bool True on success, false to trigger a retry
+     */
+    public function run(): bool {
+        $pageId = $this->params['pageId'] ?? null;
+        if ( $pageId === null ) {
+            // Non-transient error: log and return true to avoid pointless retries
+            wfLogWarning( 'myCustomJob: missing pageId parameter' );
+            return true;
+        }
+
+        // ... perform the deferred work ...
+
+        return true;
+    }
+}
+```
+
+Register the job type in your extension's `extension.json`:
+
+```json
+{
+    "JobClasses": {
+        "myCustomJob": "MyExtension\\Jobs\\MyCustomJob"
+    }
+}
+```
+
+Enqueue the job from your extension code:
+
+```php
+use MediaWiki\JobQueue\JobSpecification;
+use MediaWiki\MediaWikiServices;
+
+$services = MediaWikiServices::getInstance();
+$jobQueueGroup = $services->getJobQueueGroup();
+
+$job = new JobSpecification(
+    'myCustomJob',
+    [ 'pageId' => $pageId ],
+    [],
+    $title
+);
+
+// lazyPush defers enqueueing until after the response is sent
+$jobQueueGroup->lazyPush( $job );
+```
+
+<Tip>
+Prefer `lazyPush()` over `push()` in web request contexts. `lazyPush()` defers the enqueue until after the response has been flushed to the client, keeping request latency low. Use `push()` only when you need to surface enqueue failures to the caller.
+</Tip>
+
+### Job Deduplication
+
+To prevent duplicate jobs from piling up, override `getDeduplicationInfo()` and set `$this->removeDuplicates = true`:
+
+```php
+public function __construct( Title $title, array $params ) {
+    parent::__construct( 'myCustomJob', $title, $params );
+    // Remove duplicates based on deduplication info
+    $this->removeDuplicates = true;
+}
+
+public function getDeduplicationInfo(): array {
+    $info = parent::getDeduplicationInfo();
+    // Only keep the page ID in deduplication info
+    $info['params'] = [ 'pageId' => $this->params['pageId'] ];
+    return $info;
+}
+```

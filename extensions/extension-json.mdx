@@ -1,0 +1,472 @@
+---
+title: "extension.json Reference"
+description: "Complete reference for the extension.json manifest file."
+---
+
+`extension.json` is the manifest file read by `ExtensionRegistry` when an extension is loaded via `wfLoadExtension()`. It declares all metadata, PHP autoloading, hook registrations, i18n directories, ResourceLoader modules, services, and entry points for your extension.
+
+The file must contain at minimum `manifest_version` and `name`. The current schema version is **2**.
+
+## Comprehensive example
+
+The following example covers the most commonly used fields:
+
+```json extension.json
+{
+    "manifest_version": 2,
+    "name": "FoodProcessor",
+    "version": "2.1.0",
+    "author": [
+        "Alice Developer",
+        "Bob Contributor"
+    ],
+    "url": "https://www.mediawiki.org/wiki/Extension:FoodProcessor",
+    "descriptionmsg": "foodprocessor-desc",
+    "license-name": "GPL-2.0-or-later",
+    "type": "other",
+
+    "requires": {
+        "MediaWiki": ">= 1.39.0",
+        "platform": {
+            "php": ">= 8.0"
+        },
+        "extensions": {
+            "SomeOtherExtension": "*"
+        }
+    },
+
+    "AutoloadNamespaces": {
+        "MediaWiki\\Extension\\FoodProcessor\\": "src/"
+    },
+
+    "HookHandlers": {
+        "main": {
+            "class": "MediaWiki\\Extension\\FoodProcessor\\HookHandler",
+            "services": [ "ReadOnlyMode" ]
+        }
+    },
+
+    "Hooks": {
+        "BeforePageDisplay": "main",
+        "EditPage::showEditForm:initial": {
+            "handler": "main"
+        }
+    },
+
+    "MessagesDirs": {
+        "FoodProcessor": [
+            "i18n"
+        ]
+    },
+
+    "ResourceFileModulePaths": {
+        "localBasePath": "modules",
+        "remoteExtPath": "FoodProcessor/modules"
+    },
+
+    "ResourceModules": {
+        "ext.foodprocessor.ui": {
+            "scripts": [ "foodprocessor.js" ],
+            "styles": [ "foodprocessor.css" ],
+            "messages": [ "foodprocessor-button-label" ],
+            "dependencies": [ "mediawiki.util" ]
+        }
+    },
+
+    "ServiceWiringFiles": [
+        "src/ServiceWiring.php"
+    ],
+
+    "SpecialPages": {
+        "FoodProcessor": {
+            "class": "MediaWiki\\Extension\\FoodProcessor\\SpecialFoodProcessor",
+            "services": [ "FoodProcessor.ProcessorService" ]
+        }
+    },
+
+    "APIModules": {
+        "foodprocessor": "MediaWiki\\Extension\\FoodProcessor\\Api\\ApiFoodProcessor"
+    },
+
+    "ContentHandlers": {
+        "FoodRecipe": "MediaWiki\\Extension\\FoodProcessor\\Content\\FoodRecipeHandler"
+    },
+
+    "config": {
+        "FoodProcessorMaxItems": {
+            "value": 100,
+            "description": "Maximum number of food items to process in one batch."
+        }
+    },
+
+    "DeprecatedHooks": {
+        "Mash": {
+            "deprecatedVersion": "2.0",
+            "component": "FoodProcessor"
+        }
+    }
+}
+```
+
+## Identity fields
+
+<AccordionGroup>
+  <Accordion title="manifest_version">
+    **Required.** Integer version of the extension.json schema. Must be `2` for new extensions. The oldest supported version is `1`, supported since MediaWiki 1.25. Version `2` is supported since MediaWiki 1.29.
+
+    ```json
+    "manifest_version": 2
+    ```
+  </Accordion>
+
+  <Accordion title="name">
+    **Required.** The extension's canonical name as a string. This is used as the directory name and in `Special:Version`.
+
+    ```json
+    "name": "FoodProcessor"
+    ```
+  </Accordion>
+
+  <Accordion title="version">
+    Semantic version string for this release of the extension.
+
+    ```json
+    "version": "2.1.0"
+    ```
+  </Accordion>
+
+  <Accordion title="author">
+    Extension authors. Accepts a string or an array of strings. Wiki markup (links) is supported in author names.
+
+    ```json
+    "author": ["Alice Developer", "[[mw:User:Bob|Bob Contributor]]"]
+    ```
+  </Accordion>
+
+  <Accordion title="url">
+    URL to the extension's homepage. Must be a valid URI reference.
+
+    ```json
+    "url": "https://www.mediawiki.org/wiki/Extension:FoodProcessor"
+    ```
+  </Accordion>
+
+  <Accordion title="descriptionmsg">
+    i18n message key for the extension description shown in `Special:Version`. Preferred over the raw `description` field because it allows translation.
+
+    ```json
+    "descriptionmsg": "foodprocessor-desc"
+    ```
+  </Accordion>
+
+  <Accordion title="license-name">
+    SPDX identifier for the extension's license.
+
+    ```json
+    "license-name": "GPL-2.0-or-later"
+    ```
+  </Accordion>
+
+  <Accordion title="type">
+    The extension's functional category. Defaults to `"other"`. Valid values include: `api`, `antispam`, `editor`, `media`, `parserhook`, `semantic`, `skin`, `specialpage`, `variable`, `wikibase`, `other`.
+
+    ```json
+    "type": "specialpage"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Dependency requirements
+
+The `requires` object declares version constraints that MediaWiki checks before loading the extension. If constraints are not satisfied, the extension is not loaded and an error is shown.
+
+```json
+"requires": {
+    "MediaWiki": ">= 1.39.0",
+    "platform": {
+        "php": ">= 8.0",
+        "ext-json": "*"
+    },
+    "extensions": {
+        "AnotherExtension": ">= 1.2.0"
+    },
+    "skins": {
+        "Vector": "*"
+    }
+}
+```
+
+| Key | Description |
+|-----|-------------|
+| `MediaWiki` | Version constraint string against MediaWiki core. |
+| `platform.php` | Version constraint string against PHP. |
+| `platform.ext-*` | Required PHP extension. Value must be `"*"`. |
+| `platform.ability-shell` | Boolean; `true` if shell access is required. |
+| `extensions` | Map of extension name to version constraint. |
+| `skins` | Map of skin name to version constraint. |
+
+Use `suggests` for optional dependencies that enhance but are not required by the extension. Use `dev-requires` for development-only dependencies.
+
+## Autoloading
+
+<Tabs>
+  <Tab title="AutoloadNamespaces (PSR-4)">
+    Maps a PHP namespace to a directory path relative to the extension root. All classes under that namespace are resolved to the corresponding file path automatically.
+
+    ```json
+    "AutoloadNamespaces": {
+        "MediaWiki\\Extension\\FoodProcessor\\": "src/"
+    }
+    ```
+
+    With this mapping, `MediaWiki\Extension\FoodProcessor\HookHandler` maps to `src/HookHandler.php`. The trailing backslash in the namespace key and trailing slash in the path are required by the schema.
+  </Tab>
+  <Tab title="AutoloadClasses (legacy)">
+    Maps individual class names to file paths. Use `AutoloadNamespaces` for new extensions; `AutoloadClasses` is a legacy mechanism for extensions that predate PSR-4 conventions.
+
+    ```json
+    "AutoloadClasses": {
+        "FoodProcessorHooks": "FoodProcessor.hooks.php",
+        "SpecialFoodProcessor": "specials/SpecialFoodProcessor.php"
+    }
+    ```
+  </Tab>
+  <Tab title="TestAutoloadNamespaces">
+    PSR-4 autoloading used only when running PHPUnit tests. Keeps test classes out of production autoloading.
+
+    ```json
+    "TestAutoloadNamespaces": {
+        "MediaWiki\\Extension\\FoodProcessor\\Tests\\": "tests/phpunit/"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Hook registration
+
+Hooks are registered in two coordinated fields: `HookHandlers` defines handler objects, and `Hooks` maps hook names to those objects.
+
+### HookHandlers
+
+`HookHandlers` is a map of handler names to [ObjectFactory](https://www.mediawiki.org/wiki/ObjectFactory) specifications. The `class` key is the fully-qualified class name; `services` lists MediaWiki services to inject into the constructor.
+
+```json
+"HookHandlers": {
+    "main": {
+        "class": "MediaWiki\\Extension\\FoodProcessor\\HookHandler",
+        "services": [ "ReadOnlyMode" ]
+    },
+    "search": {
+        "class": "MediaWiki\\Extension\\FoodProcessor\\SearchHookHandler",
+        "services": [ "FoodProcessor.ProcessorService", "SearchEngineFactory" ]
+    }
+}
+```
+
+### Hooks
+
+`Hooks` maps hook names to handler names defined in `HookHandlers`. The value can be a plain string (shorthand), an object with a `handler` key, or an array of such values.
+
+<CodeGroup>
+
+```json String shorthand
+"Hooks": {
+    "BeforePageDisplay": "main"
+}
+```
+
+```json Object form
+"Hooks": {
+    "BeforePageDisplay": {
+        "handler": "main"
+    }
+}
+```
+
+```json Deprecation acknowledgement
+"Hooks": {
+    "Mash": {
+        "handler": "main",
+        "deprecated": true
+    }
+}
+```
+
+</CodeGroup>
+
+<Warning>
+  In the `Hooks` map, use the hook name without the trailing `Hook` suffix. For `BeforePageDisplayHook`, the key is `BeforePageDisplay`.
+</Warning>
+
+### DeprecatedHooks
+
+Declares hooks that your extension defines and has deprecated. This activates call filtering so that extensions that acknowledge the deprecation have their handlers skipped.
+
+```json
+"DeprecatedHooks": {
+    "Mash": {
+        "deprecatedVersion": "2.0",
+        "component": "FoodProcessor",
+        "silent": false
+    }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `deprecatedVersion` | **Required.** Version in which the hook was deprecated. |
+| `component` | The component name shown in warnings. Defaults to the extension name. |
+| `silent` | If `true`, no deprecation warning is raised but call filtering is still activated. |
+
+## Localisation
+
+### MessagesDirs
+
+Maps a name to one or more directory paths containing JSON i18n files. Each locale file (e.g. `en.json`, `fr.json`) in those directories is registered with the MediaWiki localisation system.
+
+```json
+"MessagesDirs": {
+    "FoodProcessor": [
+        "i18n"
+    ]
+}
+```
+
+Message files follow the format `{language-code}.json` and a `qqq.json` for documentation.
+
+## ResourceLoader modules
+
+### ResourceFileModulePaths
+
+Sets default base paths for all `ResourceModules` in this extension, avoiding repetition.
+
+```json
+"ResourceFileModulePaths": {
+    "localBasePath": "modules",
+    "remoteExtPath": "FoodProcessor/modules"
+}
+```
+
+### ResourceModules
+
+Registers ResourceLoader file modules. Module names must match `^[a-zA-Z0-9-\.]+$`. Each module supports the following common fields:
+
+```json
+"ResourceModules": {
+    "ext.foodprocessor.ui": {
+        "scripts": [ "foodprocessor.js" ],
+        "styles": [ "foodprocessor.css" ],
+        "messages": [
+            "foodprocessor-button-label",
+            "foodprocessor-error-msg"
+        ],
+        "dependencies": [
+            "mediawiki.util",
+            "oojs-ui-core"
+        ]
+    },
+    "ext.foodprocessor.init": {
+        "packageFiles": [
+            { "name": "init.js", "main": true },
+            "config.json"
+        ],
+        "dependencies": [ "ext.foodprocessor.ui" ]
+    }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `scripts` | JavaScript files to always include. |
+| `styles` | CSS/Less files to always load. |
+| `messages` | i18n message keys to make available in JavaScript via `mw.msg()`. |
+| `dependencies` | Other ResourceLoader modules that must be loaded first. |
+| `packageFiles` | Files that can be `require()`d from other scripts in the module. |
+| `skinStyles` | Per-skin CSS overrides. |
+| `group` | Loading group for the module. |
+| `noflip` | If `true`, skips CSSJanus RTL flipping. |
+
+## Services
+
+### ServiceWiringFiles
+
+Lists PHP files that return service factory arrays. These are loaded by the default `MediaWikiServices` instance. See the [Extension Services](/extensions/services) page for a full guide.
+
+```json
+"ServiceWiringFiles": [
+    "src/ServiceWiring.php"
+]
+```
+
+## Entry points
+
+### SpecialPages
+
+Registers special pages. Values are class names or ObjectFactory specifications.
+
+```json
+"SpecialPages": {
+    "FoodProcessor": {
+        "class": "MediaWiki\\Extension\\FoodProcessor\\SpecialFoodProcessor",
+        "services": [ "FoodProcessor.ProcessorService" ]
+    }
+}
+```
+
+### APIModules
+
+Registers action API modules (for `api.php?action=...`). Values are class names.
+
+```json
+"APIModules": {
+    "foodprocessor": "MediaWiki\\Extension\\FoodProcessor\\Api\\ApiFoodProcessor"
+}
+```
+
+Additional API module types follow the same pattern:
+
+| Field | API query type |
+|-------|----------------|
+| `APIPropModules` | `prop=` query submodules |
+| `APIListModules` | `list=` query submodules |
+| `APIMetaModules` | `meta=` query submodules |
+| `APIFormatModules` | Output format modules |
+
+### ContentHandlers
+
+Maps content model IDs to handler class names or ObjectFactory specifications. The key is the model ID (a string matching `^[A-Za-z]+$`).
+
+```json
+"ContentHandlers": {
+    "FoodRecipe": "MediaWiki\\Extension\\FoodProcessor\\Content\\FoodRecipeHandler"
+}
+```
+
+## Configuration variables
+
+Extension configuration is declared in the `config` object. Each key becomes a global variable prefixed with `wg` (or a custom prefix set by `config_prefix`).
+
+```json
+"config_prefix": "wg",
+"config": {
+    "FoodProcessorMaxItems": {
+        "value": 100,
+        "description": "Maximum items to process per batch.",
+        "merge_strategy": "provide_default"
+    },
+    "FoodProcessorAllowedTypes": {
+        "value": [ "fruit", "vegetable" ],
+        "merge_strategy": "array_merge"
+    }
+}
+```
+
+This creates `$wgFoodProcessorMaxItems` and `$wgFoodProcessorAllowedTypes` globals. The `merge_strategy` field controls how `LocalSettings.php` overrides interact with the default value:
+
+| Strategy | Behaviour |
+|----------|-----------|
+| `provide_default` | The config value is only used if not already set. |
+| `array_merge` | Arrays are merged with `array_merge()`. Default. |
+| `array_plus` | Arrays are merged with `+`. |
+| `array_plus_2d` | Two-dimensional arrays are merged with `+`. |
+| `array_replace_recursive` | Deep merge using `array_replace_recursive()`. |

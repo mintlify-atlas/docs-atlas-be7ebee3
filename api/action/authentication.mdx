@@ -1,0 +1,321 @@
+---
+title: "Authentication"
+description: "Authenticating with the MediaWiki Action API: bot passwords, OAuth, and CSRF tokens."
+---
+
+The MediaWiki Action API supports several authentication methods. For automated scripts and bots, **bot passwords** are the recommended approach. Interactive applications can use the `clientlogin` flow backed by AuthManager. Both approaches ultimately produce a session cookie that must be included with subsequent requests.
+
+## Authentication methods
+
+<CardGroup cols={2}>
+  <Card title="Bot passwords" icon="robot">
+    Purpose-built credentials for API bots. Scoped to specific permissions. Created at `Special:BotPasswords`. Use with `action=login`.
+  </Card>
+  <Card title="OAuth" icon="key">
+    Industry-standard delegated authorization. Suitable for third-party applications acting on behalf of users. Requires the OAuth extension.
+  </Card>
+  <Card title="clientlogin" icon="user">
+    Interactive multi-step login via AuthManager. Supports MFA, CAPTCHA, and external identity providers. Use for user-facing applications.
+  </Card>
+  <Card title="CSRF tokens" icon="shield">
+    Not an authentication method itself, but required for all write operations. Obtained after authenticating via `action=query&meta=tokens`.
+  </Card>
+</CardGroup>
+
+## Bot passwords (recommended for bots)
+
+Bot passwords are separate credentials tied to a main account. They support fine-grained permission scopes (e.g., allow only editing, not blocking users) and do not expose your main account password.
+
+### Creating a bot password
+
+<Steps>
+  <Step title="Navigate to Special:BotPasswords">
+    Go to `https://YOUR_WIKI/wiki/Special:BotPasswords` while logged in to your main account.
+  </Step>
+  <Step title="Enter a bot name">
+    Choose a descriptive name for the bot application (e.g., `my-archiving-bot`). This becomes part of the login username: `MainAccountName@BotName`.
+  </Step>
+  <Step title="Select permission grants">
+    Check only the permissions your bot actually needs. Available grants include: edit existing pages, create new pages, upload files, delete pages, patrol changes, send email, and others.
+  </Step>
+  <Step title="Save and record the password">
+    The generated password is shown only once. Store it securely. The full login username format is `MainAccountName@BotName`.
+  </Step>
+</Steps>
+
+### Logging in with a bot password
+
+Bot password authentication uses `action=login` in a two-step process:
+
+1. Make an initial request without a token to obtain a login token.
+2. Submit credentials with the token.
+
+<Note>
+  `action=login` requires POST for both steps. The `password` and `token` parameters must be posted (enforced via `requirePostedParameters` in `ApiLogin::execute`).
+</Note>
+
+<CodeGroup>
+
+```bash curl
+# Step 1: Get a login token
+curl -c cookies.txt -X POST \
+  "https://en.wikipedia.org/w/api.php" \
+  --data "action=query&meta=tokens&type=login&format=json&formatversion=2"
+
+# Response: { "query": { "tokens": { "logintoken": "abc123+\\" } } }
+
+# Step 2: Log in with the token
+curl -b cookies.txt -c cookies.txt -X POST \
+  "https://en.wikipedia.org/w/api.php" \
+  --data-urlencode "action=login" \
+  --data-urlencode "lgname=MyAccount@my-bot" \
+  --data-urlencode "lgpassword=GENERATED_BOT_PASSWORD" \
+  --data-urlencode "lgtoken=abc123+\\" \
+  --data "format=json&formatversion=2"
+```
+
+```python Python (requests)
+import requests
+
+S = requests.Session()
+API_URL = "https://en.wikipedia.org/w/api.php"
+
+# Step 1: Fetch login token
+login_token = S.get(API_URL, params={
+    "action": "query",
+    "meta": "tokens",
+    "type": "login",
+    "format": "json",
+    "formatversion": "2",
+}).json()["query"]["tokens"]["logintoken"]
+
+# Step 2: Log in
+login_resp = S.post(API_URL, data={
+    "action": "login",
+    "lgname": "MyAccount@my-bot",
+    "lgpassword": "GENERATED_BOT_PASSWORD",
+    "lgtoken": login_token,
+    "format": "json",
+    "formatversion": "2",
+}).json()
+
+if login_resp["login"]["result"] == "Success":
+    print("Logged in as:", login_resp["login"]["lgusername"])
+else:
+    raise RuntimeError("Login failed: " + str(login_resp["login"]))
+```
+
+</CodeGroup>
+
+### Login response
+
+```json
+{
+  "login": {
+    "result": "Success",
+    "lguserid": 12345,
+    "lgusername": "MyAccount@my-bot"
+  }
+}
+```
+
+<ResponseField name="login.result" type="string">
+  The outcome of the login attempt. Possible values: `Success`, `Failed`, `NeedToken`, `WrongToken`, `Aborted`.
+</ResponseField>
+
+<ResponseField name="login.lguserid" type="integer">
+  The user ID of the authenticated account. Only present on `Success`.
+</ResponseField>
+
+<ResponseField name="login.lgusername" type="string">
+  The username of the authenticated account. Only present on `Success`.
+</ResponseField>
+
+<ResponseField name="login.reason" type="string">
+  Human-readable failure reason. Only present on `Failed` or `Aborted`.
+</ResponseField>
+
+### action=login parameters
+
+<ParamField body="lgname" type="string">
+  Username. For bot passwords, use the format `MainAccountName@BotName`.
+</ParamField>
+
+<ParamField body="lgpassword" type="string">
+  Password (marked sensitive; must be POSTed).
+</ParamField>
+
+<ParamField body="lgtoken" type="string">
+  Login token from `action=query&meta=tokens&type=login`. Required in the second step.
+</ParamField>
+
+<ParamField body="lgdomain" type="string">
+  Authentication domain, for wikis using external authentication systems (LDAP, etc.).
+</ParamField>
+
+<Warning>
+  Using `action=login` with main account credentials (not a bot password) is deprecated and triggers a deprecation warning in the response. Main account logins via this endpoint require `$wgEnableBotPasswords = false` and are not recommended. Always create a dedicated bot password.
+</Warning>
+
+## clientlogin (interactive/AuthManager flow)
+
+`action=clientlogin` implements the full AuthManager login protocol, which supports multi-factor authentication, CAPTCHAs, and external identity providers. It is implemented in `ApiClientLogin` and is the correct choice for user-facing applications.
+
+`clientlogin` is a multi-step flow; the server may return `UI` or `REDIRECT` responses requesting additional data (e.g., a TOTP code or OAuth redirect).
+
+```bash
+# Step 1: Begin login
+curl -c cookies.txt -X POST "https://en.wikipedia.org/w/api.php" \
+  --data-urlencode "action=clientlogin" \
+  --data-urlencode "loginreturnurl=https://your-app.example/callback" \
+  --data-urlencode "logintoken=LOGIN_TOKEN" \
+  --data-urlencode "username=ExampleUser" \
+  --data-urlencode "password=USERPASSWORD" \
+  --data "format=json&formatversion=2"
+```
+
+The `returnurl` parameter is required for redirect-based flows (e.g., OpenID Connect). For simple password-only logins it can be set to any valid URL.
+
+On success:
+
+```json
+{ "clientlogin": { "status": "PASS", "username": "ExampleUser" } }
+```
+
+On MFA challenge:
+
+```json
+{
+  "clientlogin": {
+    "status": "UI",
+    "message": "Enter your two-factor authentication code.",
+    "requests": [ ... ]
+  }
+}
+```
+
+Continue with `continue=1` and the fields requested in `requests`.
+
+## CSRF tokens
+
+Every write operation (edit, delete, move, protect, block, etc.) requires a CSRF token. The token is tied to the authenticated session and changes if the session is lost or the user logs out.
+
+### Fetching a CSRF token
+
+```bash
+curl -b cookies.txt \
+  "https://en.wikipedia.org/w/api.php?action=query&meta=tokens&type=csrf&format=json&formatversion=2"
+```
+
+```json
+{
+  "query": {
+    "tokens": {
+      "csrftoken": "d41d8cd98f00b204e9800998ecf8427e+\\"
+    }
+  }
+}
+```
+
+The token always ends with `+\`. For anonymous users (or users without a valid session), the token value is `+\` (a `LoggedOutEditToken`) and will be rejected by write operations.
+
+### Available token types
+
+From `ApiQueryTokens::getTokenTypeSalts`, these token types are built in:
+
+| Type | Used by |
+|------|---------|
+| `csrf` | edit, delete, move, protect, block, upload, and all other write actions |
+| `watch` | action=watch |
+| `patrol` | action=patrol |
+| `rollback` | action=rollback |
+| `userrights` | action=userrights |
+| `login` | action=login (step 2) |
+| `createaccount` | action=createaccount |
+
+Fetch multiple types in one request:
+
+```bash
+curl -b cookies.txt \
+  "https://en.wikipedia.org/w/api.php?action=query&meta=tokens&type=csrf|watch|patrol&format=json&formatversion=2"
+```
+
+<Tip>
+  Fetch the CSRF token once per session and reuse it. Tokens are valid for the lifetime of the session. Do not request a new token for every write operation — this adds unnecessary latency and load.
+</Tip>
+
+## Session handling
+
+The API uses HTTP cookies for session state. When using `requests` in Python, the `Session` object handles cookie persistence automatically. When using `curl`, use `-b cookies.txt -c cookies.txt` for every request in the same session.
+
+```python
+import requests
+
+# A single Session object persists cookies across all requests
+S = requests.Session()
+
+# All requests through S share the same cookies / session
+S.get("https://en.wikipedia.org/w/api.php", params={"action": "query", ...})
+S.post("https://en.wikipedia.org/w/api.php", data={"action": "edit", ...})
+```
+
+## OAuth
+
+For third-party applications acting on behalf of users, OAuth is the appropriate choice. The MediaWiki OAuth extension implements OAuth 1.0a and OAuth 2.0.
+
+OAuth requires registering a consumer application at `Special:OAuthConsumerRegistration`. Once approved, users can authorize your application through the standard OAuth redirect flow, and your application receives an access token for that user.
+
+With OAuth, you do not use `action=login`. Instead, sign each API request with your OAuth credentials using an OAuth library.
+
+```python
+from requests_oauthlib import OAuth1
+import requests
+
+auth = OAuth1(
+    client_key="YOUR_CONSUMER_KEY",
+    client_secret="YOUR_CONSUMER_SECRET",
+    resource_owner_key="ACCESS_TOKEN",
+    resource_owner_secret="ACCESS_TOKEN_SECRET",
+)
+
+response = requests.get(
+    "https://en.wikipedia.org/w/api.php",
+    params={"action": "query", "meta": "userinfo", "format": "json"},
+    auth=auth,
+)
+print(response.json())
+```
+
+CSRF tokens are still required for write operations when using OAuth. Fetch them the same way — `action=query&meta=tokens&type=csrf` — with the OAuth-signed request.
+
+## Logout
+
+End the current session with `action=logout`. This invalidates the session cookie and the CSRF token.
+
+```bash
+curl -b cookies.txt -c cookies.txt -X POST \
+  "https://en.wikipedia.org/w/api.php" \
+  --data-urlencode "action=logout" \
+  --data-urlencode "token=$CSRF_TOKEN" \
+  --data "format=json&formatversion=2"
+```
+
+```json
+{ "logout": {} }
+```
+
+<Note>
+  `action=logout` requires a CSRF token (not a login token). Fetch it before logging out if you have not already done so.
+</Note>
+
+## Common authentication errors
+
+| Error code | Cause |
+|------------|-------|
+| `Failed` | Wrong username or password |
+| `NeedToken` | Login token was missing from the request |
+| `WrongToken` | Login token did not match the session |
+| `Aborted` | Login was aborted, typically because the wiki requires bot passwords and a main account login was attempted |
+| `badtoken` | CSRF token is invalid, stale, or belongs to a different session |
+| `sessionlost` | The session expired between requests |
+| `notloggedin` | A write operation was attempted without a valid session |

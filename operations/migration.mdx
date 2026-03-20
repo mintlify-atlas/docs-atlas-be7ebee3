@@ -1,0 +1,324 @@
+---
+title: "Migration"
+description: "Migrating wikis: import/export, database backend changes, and platform migration."
+---
+
+This page covers the common migration scenarios for MediaWiki: importing content from other platforms, switching database backends, moving a wiki to a new server, and migrating the file repository layout.
+
+---
+
+## XML Dump Format
+
+MediaWiki uses an XML-based dump format as its canonical interchange format for wiki content. Dumps contain page revisions, metadata, and optionally log entries and file upload information.
+
+Schema files are located in `docs/export-*.xsd`. The current format is defined in `docs/export-0.11.xsd`.
+
+### Creating an XML Dump
+
+Use `dumpBackup.php` to export your wiki content:
+
+```bash
+# Export all current page revisions
+php maintenance/run.php dumpBackup --current > wiki-dump.xml
+
+# Export full history of all pages
+php maintenance/run.php dumpBackup --full > wiki-dump-full.xml
+
+# Export specific namespaces (0=main, 4=project, 10=template, 14=category)
+php maintenance/run.php dumpBackup --current --namespaces 0,4,10,14 > partial-dump.xml
+
+# Export from a list of pages
+php maintenance/run.php dumpBackup --current --pagelist pages.txt > selected.xml
+
+# Export log events
+php maintenance/run.php dumpBackup --logs > logs.xml
+
+# Compress the output directly
+php maintenance/run.php dumpBackup --full | gzip > wiki-dump-full.xml.gz
+```
+
+### Two-Pass Dumps (Large Wikis)
+
+For very large wikis, use the two-pass dump method to reduce database load:
+
+```bash
+# Pass 1: dump stubs (page/revision metadata without text)
+php maintenance/run.php dumpBackup --full --stub > stub.xml
+
+# Pass 2: fetch text content and merge
+php maintenance/run.php dumpTextPass --stub=stub.xml --output=wiki-dump-full.xml
+```
+
+---
+
+## Importing an XML Dump
+
+### importDump.php
+
+Imports pages from an XML dump file into the current wiki.
+
+```bash
+# Basic import
+php maintenance/run.php importDump dump.xml
+
+# Import a compressed dump
+php maintenance/run.php importDump dump.xml.gz
+
+# Dry run — parse without importing
+php maintenance/run.php importDump --dry-run dump.xml
+
+# Import only specific namespaces
+php maintenance/run.php importDump --namespaces 0,10 dump.xml
+
+# Import pages as subpages of a root page
+php maintenance/run.php importDump --rootpage "Imported" dump.xml
+
+# Include uploaded file data (requires --image-base-path)
+php maintenance/run.php importDump --uploads --image-base-path /path/to/images dump.xml
+
+# Prefix usernames from the source wiki (avoids collisions)
+php maintenance/run.php importDump --username-prefix "OldWiki" dump.xml
+
+# Skip the first N pages (useful for resuming a failed import)
+php maintenance/run.php importDump --skip-to 1000 dump.xml
+
+# Show progress every N pages
+php maintenance/run.php importDump --report 500 dump.xml
+```
+
+**Key Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Parse the dump without writing to the database |
+| `--namespaces <list>` | Import only pages in these namespace numbers |
+| `--rootpage <title>` | Import pages as subpages of this title |
+| `--uploads` | Process file upload records in the dump |
+| `--image-base-path <path>` | Load actual files from this directory |
+| `--username-prefix <prefix>` | Prefix all usernames with this string |
+| `--no-local-users` | Do not associate edits with local accounts |
+| `--skip-to <n>` | Skip the first N pages (for resuming) |
+| `--report <n>` | Print a progress report every N pages |
+
+<Warning>
+Importing a dump does not import user account data (passwords, preferences, watchlists). Only the edit history and attribution are preserved. Users must create new accounts on the destination wiki.
+</Warning>
+
+---
+
+## Migrating from Another Wiki Platform
+
+To migrate content from another wiki platform (Confluence, DokuWiki, TWiki, etc.) to MediaWiki:
+
+<Steps>
+  <Step title="Convert content to MediaWiki XML format">
+    Use a platform-specific converter to produce an XML dump compatible with MediaWiki's import format. Tools include:
+    - [DokuWiki to MediaWiki converter](https://www.mediawiki.org/wiki/Manual:DokuWiki_to_MediaWiki)
+    - [Confluence to MediaWiki exporter](https://www.mediawiki.org/wiki/Manual:Importing_from_Confluence)
+    - Generic converters listed on [mediawiki.org/wiki/Converting_content_to_MediaWiki](https://www.mediawiki.org/wiki/Converting_content_to_MediaWiki)
+  </Step>
+
+  <Step title="Install and configure MediaWiki">
+    Set up a fresh MediaWiki installation:
+    ```bash
+    php maintenance/run.php install \
+      --dbtype mysql --dbserver localhost \
+      --dbname new_wiki --dbuser wikiuser --dbpass secret \
+      --pass adminpass "New Wiki" Admin
+    ```
+  </Step>
+
+  <Step title="Import the converted XML dump">
+    ```bash
+    php maintenance/run.php importDump --username-prefix "Imported" converted-dump.xml
+    ```
+  </Step>
+
+  <Step title="Rebuild link tables">
+    After a large import, rebuild the link tables to reflect the imported content:
+    ```bash
+    php maintenance/run.php refreshLinks
+    ```
+  </Step>
+
+  <Step title="Import files (if applicable)">
+    ```bash
+    # Import images from a directory
+    php maintenance/run.php importImages /path/to/images --user Admin
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Moving a Wiki to a New Server
+
+<Steps>
+  <Step title="Put the wiki in read-only mode">
+    ```php
+    // LocalSettings.php
+    $wgReadOnly = 'Wiki is being moved to a new server.';
+    ```
+  </Step>
+
+  <Step title="Back up the database">
+    ```bash
+    # MySQL / MariaDB
+    mysqldump --single-transaction -u wikiuser -p my_wiki > wiki-migration.sql
+
+    # PostgreSQL
+    pg_dump -U wikiuser my_wiki > wiki-migration.sql
+    ```
+  </Step>
+
+  <Step title="Copy files to the new server">
+    ```bash
+    rsync -avz /var/www/wiki/ newserver:/var/www/wiki/
+    ```
+  </Step>
+
+  <Step title="Restore the database on the new server">
+    ```bash
+    # MySQL
+    mysql -u wikiuser -p new_wiki < wiki-migration.sql
+
+    # PostgreSQL
+    psql -U wikiuser new_wiki < wiki-migration.sql
+    ```
+  </Step>
+
+  <Step title="Update LocalSettings.php">
+    Update `$wgServer`, `$wgDBserver`, and any absolute file paths in `LocalSettings.php` to reflect the new server.
+
+    ```php
+    $wgServer     = 'https://wiki.newdomain.example.com';
+    $wgDBserver   = 'new-db-host.example.com';
+    ```
+  </Step>
+
+  <Step title="Run update.php">
+    Even for a same-version migration, run `update.php` to ensure all tables are consistent:
+    ```bash
+    php maintenance/run.php update --quick
+    ```
+  </Step>
+
+  <Step title="Rebuild caches and remove read-only mode">
+    ```bash
+    php maintenance/run.php rebuildLocalisationCache
+    ```
+    Remove `$wgReadOnly` from `LocalSettings.php` and test the migration.
+  </Step>
+</Steps>
+
+---
+
+## Migrating Database Backends
+
+### MySQL to PostgreSQL (or vice versa)
+
+MediaWiki does not provide a direct database-backend conversion script. The recommended approach is:
+
+1. Export content as an XML dump from the source wiki
+2. Install a fresh MediaWiki with the new database backend
+3. Import the XML dump into the new installation
+
+```bash
+# Step 1: Full dump from MySQL-backed wiki
+php maintenance/run.php dumpBackup --full > full-history.xml
+
+# Step 2: Install MediaWiki with PostgreSQL
+php maintenance/run.php install \
+  --dbtype postgres --dbserver localhost \
+  --dbname my_wiki --dbuser wikiuser \
+  "My Wiki" Admin --pass adminpass
+
+# Step 3: Import the dump
+php maintenance/run.php importDump full-history.xml
+```
+
+<Note>
+User account data (passwords, preferences, email addresses, watchlists) is not stored in XML dumps. You will need to either use the `user` table dump from MySQL directly (with schema translation) or require users to re-register. Migrating the raw `user` table data across database backends is complex and not officially supported.
+</Note>
+
+---
+
+## File Repository Migration
+
+### Migrating File Layout
+
+MediaWiki supports two file repository layouts:
+- `name` — files stored flat by name (legacy)
+- `sha1` — files stored in a directory tree based on SHA-1 hash (recommended)
+
+Use `migrateFileRepoLayout.php` to migrate between layouts:
+
+```bash
+# Migrate from flat name layout to SHA-1-based layout
+php maintenance/run.php migrateFileRepoLayout \
+  --oldlayout name \
+  --newlayout sha1
+
+# Migrate only files uploaded after a specific timestamp
+php maintenance/run.php migrateFileRepoLayout \
+  --oldlayout name \
+  --newlayout sha1 \
+  --since 20240101000000
+```
+
+### Copying Between File Backends
+
+Use `copyFileBackend.php` to copy files between different file backend configurations (e.g., local filesystem to Swift object storage):
+
+```bash
+php maintenance/run.php copyFileBackend \
+  --src local-backend \
+  --dst swift-backend
+```
+
+### Importing Images
+
+Bulk-import files from a directory into the wiki's file repository:
+
+```bash
+# Import all files from a directory
+php maintenance/run.php importImages /path/to/images --user Admin
+
+# Import with a specific comment
+php maintenance/run.php importImages /path/to/images \
+  --user Admin \
+  --comment "Imported from legacy system"
+
+# Overwrite existing files
+php maintenance/run.php importImages /path/to/images \
+  --user Admin \
+  --overwrite
+```
+
+---
+
+## User Migration
+
+### Merging User Accounts
+
+If users exist in both source and destination wikis, use the **[UserMerge](https://www.mediawiki.org/wiki/Extension:UserMerge)** extension to merge duplicate accounts after import.
+
+When importing dumps with `--username-prefix`, users from the source wiki are created with a prefix (e.g., `OldWiki>Username`). After the import you can:
+
+1. Have users create new accounts on the destination wiki
+2. Use UserMerge to merge the prefixed historical account into the new account
+3. Or use `migrateUserGroup.php` to reassign group memberships
+
+```bash
+# Migrate users from one group to another
+php maintenance/run.php migrateUserGroup --from OldGroup --to NewGroup
+```
+
+### Renaming Users at Import Time
+
+When importing from another wiki, `--username-prefix` prefixes all editor names to avoid conflicts:
+
+```bash
+php maintenance/run.php importDump --username-prefix "OldWiki" dump.xml
+# Results in usernames like "OldWiki>JohnDoe" in revision history
+```

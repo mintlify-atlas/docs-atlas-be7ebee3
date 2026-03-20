@@ -1,0 +1,375 @@
+---
+title: "Title and Page Identity"
+description: "Working with page titles using Title, TitleValue, TitleFormatter, and related services."
+---
+
+MediaWiki represents page titles in several complementary types, from the mutable, feature-rich `Title` class to lightweight immutable value objects and narrow identity interfaces. Understanding when to use each avoids unnecessary coupling to global state.
+
+## Type overview
+
+<CardGroup cols={2}>
+  <Card title="Title" icon="file">
+    Mutable class implementing both `LinkTarget` and `PageIdentity`. Fetches data from the database and uses global state. Use in presentation code and legacy entry points; prefer lighter types in services.
+  </Card>
+  <Card title="TitleValue" icon="tag">
+    Immutable value object implementing `LinkTarget`. No global state, no DB access. Holds namespace, DB key, fragment, and interwiki prefix. Preferred for data transfer between services.
+  </Card>
+  <Card title="PageReference" icon="link">
+    Minimal interface: `getNamespace()`, `getDBkey()`, `getWikiId()`. Used as the most general parameter type for services that only need to identify a page.
+  </Card>
+  <Card title="PageIdentity" icon="fingerprint">
+    Extends `PageReference` with `getId()`. Represents a page that may or may not exist. `Title` implements this interface.
+  </Card>
+</CardGroup>
+
+<Note>
+`TitleValue` is the preferred type for internal data transfer. It is immutable, causes no side effects, and does not depend on global state. Prefer `TitleValue` (or `PageReference` / `PageIdentity`) over `Title` in service constructors and method signatures.
+</Note>
+
+## Title class
+
+`Title` (namespace `MediaWiki\Title`) is the traditional representation of a page title. It implements `LinkTarget`, `PageIdentity`, and `Stringable`.
+
+### Creating Title objects
+
+<CodeGroup>
+
+```php newFromText()
+use MediaWiki\Title\Title;
+
+// Parse user-supplied or wikitext title strings
+$title = Title::newFromText( 'Talk:Foo bar' );
+if ( $title === null ) {
+    // Title string was invalid
+}
+
+// With an explicit default namespace
+$title = Title::newFromText( 'Foo', NS_TEMPLATE ); // Template:Foo
+```
+
+```php makeTitle()
+// Construct directly from a known namespace integer and DB key.
+// Does NOT validate or normalize — use only with trusted input.
+$title = Title::makeTitle( NS_USER, 'Foo_bar' ); // User:Foo bar
+$title = Title::makeTitle( NS_MAIN, 'Main_Page' );
+$title = Title::makeTitle( NS_TALK, 'Sandbox', 'Section' ); // with fragment
+```
+
+```php From other types
+// From a TitleValue / LinkTarget
+$title = Title::newFromLinkTarget( $titleValue );
+
+// From a PageIdentity
+$title = Title::newFromPageIdentity( $pageIdentity );
+
+// From a PageReference
+$title = Title::newFromPageReference( $pageReference );
+```
+
+</CodeGroup>
+
+<Warning>
+`Title::newFromText()` maintains an in-process LRU cache of up to 1000 entries. It may return a previously constructed instance. If you need a guaranteed-fresh object, use `makeTitle()` or clone the returned instance.
+</Warning>
+
+### Key Title methods
+
+```php
+$title = Title::newFromText( 'Talk:Foo bar#Section' );
+
+// Text form (spaces, no namespace prefix)
+$title->getText();            // 'Foo bar'
+
+// Full text including namespace and fragment
+$title->getFullText();        // 'Talk:Foo bar#Section'
+
+// Prefixed text (namespace + title, no fragment)
+$title->getPrefixedText();    // 'Talk:Foo bar'
+
+// Database key form (underscores)
+$title->getDBkey();           // 'Foo_bar'
+$title->getPrefixedDBkey();   // 'Talk:Foo_bar'
+
+// Namespace integer
+$title->getNamespace();       // NS_TALK (= 1)
+
+// Fragment
+$title->getFragment();        // 'Section'
+
+// Article ID (0 if page does not exist; triggers DB lookup)
+$title->getArticleID();       // e.g. 42
+
+// Existence checks
+$title->isKnown();            // true if the page exists or is a special page
+$title->exists();             // true only if the page exists in the database
+$title->isSpecialPage();      // true for NS_SPECIAL titles
+
+// URL
+$title->getLocalURL();        // '/wiki/Talk:Foo_bar'
+$title->getFullURL();         // 'https://example.org/wiki/Talk:Foo_bar'
+
+// Related titles
+$title->getTalkPage();        // Title for the talk page
+$title->getSubjectPage();     // Title for the subject page
+$title->getBaseTitle();       // Title without the last subpage component
+```
+
+### Title validation rules
+
+Titles parsed by `Title::newFromText()` or `TitleParser::parseTitle()` must pass the following rules (see `docs/Title.md`):
+
+- Maximum 255 bytes in UTF-8 (512 bytes for `NS_SPECIAL`).
+- No illegal characters matching `$wgLegalTitleChars` negation.
+- No percent-encoded sequences (`%XX`).
+- No XML/HTML character references (`&amp;`).
+- No leading/trailing whitespace after normalization.
+- Spaces and underscores are interchangeable.
+- First letter is uppercased when `$wgCapitalLinks` is enabled.
+
+## TitleValue
+
+`TitleValue` (namespace `MediaWiki\Title`, since 1.23) is an immutable value object implementing `LinkTarget`. It stores namespace, DB key, fragment, and interwiki prefix.
+
+```php
+use MediaWiki\Title\TitleValue;
+
+// Direct construction (trusted data only — no validation beyond basic checks)
+$tv = new TitleValue( NS_MAIN, 'Main_Page' );
+$tv = new TitleValue( NS_USER, 'Alice', 'Contributions' ); // with fragment
+$tv = new TitleValue( NS_MAIN, 'Foo', '', 'de' );           // interwiki
+
+// Safe construction (returns null on invalid input)
+$tv = TitleValue::tryNew( NS_MAIN, 'Main_Page' );
+
+// From a PageReference
+$tv = TitleValue::newFromPage( $pageReference );
+
+// From another LinkTarget
+$tv = TitleValue::newFromLinkTarget( $linkTarget );
+
+// Accessors
+$tv->getNamespace();   // int
+$tv->getDBkey();       // string, underscored
+$tv->getText();        // string, spaces (from LinkTargetTrait)
+$tv->getFragment();    // string
+$tv->getInterwiki();   // string
+
+// Create a copy with a different fragment
+$tv2 = $tv->createFragmentTarget( 'NewSection' );
+```
+
+<Tip>
+Use `TitleParser::makeTitleValueSafe()` when constructing `TitleValue` from user input or untrusted sources. It applies full normalization and validation and returns `null` on failure.
+</Tip>
+
+## TitleFormatter service
+
+`TitleFormatter` (`MediaWiki\Title\TitleFormatter`, since 1.23, `@since 1.28` in `MediaWikiServices`) converts title objects into display strings. Obtain it from the DI container:
+
+```php
+$formatter = MediaWikiServices::getInstance()->getTitleFormatter();
+```
+
+### Methods
+
+```php
+use MediaWiki\Title\TitleValue;
+
+$tv = new TitleValue( NS_USER, 'Alice' );
+
+// Display text without namespace
+$formatter->getText( $tv );            // 'Alice'
+
+// Display text with namespace (spaces)
+$formatter->getPrefixedText( $tv );    // 'User:Alice'
+
+// DB key with namespace (underscores)
+$formatter->getPrefixedDBkey( $tv );   // 'User:Alice' (underscored if spaces in title)
+
+// Full text with namespace and fragment
+$formatter->getFullText( $tv );        // 'User:Alice'
+
+// Format from raw parts
+$formatter->formatTitle(
+    NS_USER_TALK,   // namespace
+    'Alice',        // page text
+    'Talk',         // fragment (optional)
+    ''              // interwiki prefix (optional)
+); // 'User talk:Alice#Talk'
+
+// Namespace name (respects gender-sensitive languages)
+$formatter->getNamespaceName( NS_USER, 'Alice' ); // 'User'
+```
+
+`TitleFormatter::getText()` and `getPrefixedText()` accept both `LinkTarget` and `PageReference` objects.
+
+## TitleParser service
+
+`TitleParser` (`MediaWiki\Title\TitleParser`, since 1.23) parses text strings into `TitleValue` objects with full normalization and validation.
+
+```php
+$parser = MediaWikiServices::getInstance()->getTitleParser();
+```
+
+### Methods
+
+```php
+use MediaWiki\Title\MalformedTitleException;
+
+// Parse and throw on invalid input
+try {
+    $tv = $parser->parseTitle( 'Talk:Foo bar', NS_MAIN );
+} catch ( MalformedTitleException $e ) {
+    // Title string was invalid
+    $errorKey = $e->getErrorMessage(); // e.g. 'title-invalid-characters'
+}
+
+// Parse safely — returns null on invalid input
+$tv = $parser->makeTitleValueSafe( NS_USER, 'Alice', 'Contribs', '' );
+if ( $tv !== null ) {
+    // valid
+}
+```
+
+`parseTitle()` applies:
+
+- HTML entity decoding and Unicode normalization.
+- Namespace and interwiki prefix detection.
+- Fragment extraction (`#`).
+- Whitespace/underscore normalization.
+- Length validation (255 / 512 byte limits).
+- Capital-letter normalization when `$wgCapitalLinks` is enabled.
+
+## LinkRenderer service
+
+`LinkRenderer` (`MediaWiki\Linker\LinkRenderer`, since 1.28) generates HTML anchor elements for wiki pages. Obtain via `MediaWikiServices`:
+
+```php
+$linkRenderer = MediaWikiServices::getInstance()->getLinkRenderer();
+```
+
+For links that require custom options (e.g. not rendering for comments), use `LinkRendererFactory`:
+
+```php
+$linkRenderer = MediaWikiServices::getInstance()
+    ->getLinkRendererFactory()
+    ->create();
+```
+
+### Methods
+
+```php
+use MediaWiki\Title\TitleValue;
+use Wikimedia\HtmlArmor\HtmlArmor;
+
+$target = new TitleValue( NS_MAIN, 'Main_Page' );
+
+// Auto-detect existence (DB lookup if not cached)
+$html = $linkRenderer->makeLink( $target );
+// <a href="/wiki/Main_Page">Main Page</a>  (blue or red depending on existence)
+
+// Force blue-link style (no DB lookup)
+$html = $linkRenderer->makeKnownLink(
+    $target,
+    'Go to main page',             // custom text (string or HtmlArmor)
+    [ 'class' => 'mw-redirect' ],  // extra <a> attributes
+    [ 'action' => 'history' ]      // query string parameters
+);
+
+// Force red-link style
+$html = $linkRenderer->makeBrokenLink(
+    $target,
+    null,    // null = use default title text
+    [],
+    []
+);
+
+// Blue link with pre-trusted HTML as the link text
+$html = $linkRenderer->makeKnownLink(
+    $target,
+    new HtmlArmor( '<b>Main Page</b>' )
+);
+
+// External link (since 1.43)
+$html = $linkRenderer->makeExternalLink(
+    'https://example.org',
+    'Example',
+    $currentTitle
+);
+```
+
+<Note>
+`makeLink()` performs a database lookup to determine page existence if the title is not in `LinkCache`. Use `makeKnownLink()` when you know the page exists, or `makePreloadedLink()` when you want a blue-link style without any DB overhead.
+</Note>
+
+## Page identity interfaces
+
+MediaWiki defines a hierarchy of interfaces for identifying pages:
+
+```
+PageReference
+└── PageIdentity
+    └── ExistingPageIdentity  (page_id > 0 is guaranteed)
+    └── ProperPageIdentity    (not NS_SPECIAL and not interwiki)
+```
+
+| Interface | Key methods | When to use |
+|---|---|---|
+| `PageReference` | `getNamespace()`, `getDBkey()`, `getWikiId()` | Parameter types in services that only need to identify a page |
+| `PageIdentity` | + `getId()`, `canExist()`, `exists()` | When you also need the page ID or existence flag |
+| `ExistingPageIdentity` | (marker — `getId()` returns a positive integer) | When the page is guaranteed to exist |
+| `ProperPageIdentity` | (marker — excludes special pages and interwiki) | Content pages that can be stored in the database |
+
+```php
+// Accept the widest compatible type
+function renderBreadcrumb( PageReference $page ): string {
+    return MediaWikiServices::getInstance()
+        ->getTitleFormatter()
+        ->getPrefixedText( $page );
+}
+
+// Require existence information
+function getPageCategories( PageIdentity $page ): array {
+    $id = $page->getId();
+    // ...
+}
+```
+
+## Namespace constants
+
+MediaWiki defines integer constants for the built-in namespaces in `includes/Defines.php`:
+
+| Constant | Value | Description |
+|---|---|---|
+| `NS_MAIN` | `0` | Main (article) namespace |
+| `NS_TALK` | `1` | Talk namespace |
+| `NS_USER` | `2` | User namespace |
+| `NS_USER_TALK` | `3` | User talk namespace |
+| `NS_PROJECT` | `4` | Project namespace (e.g. Wikipedia:) |
+| `NS_PROJECT_TALK` | `5` | Project talk namespace |
+| `NS_FILE` | `6` | File namespace |
+| `NS_FILE_TALK` | `7` | File talk namespace |
+| `NS_MEDIAWIKI` | `8` | MediaWiki (interface messages) |
+| `NS_MEDIAWIKI_TALK` | `9` | MediaWiki talk namespace |
+| `NS_TEMPLATE` | `10` | Template namespace |
+| `NS_TEMPLATE_TALK` | `11` | Template talk namespace |
+| `NS_HELP` | `12` | Help namespace |
+| `NS_HELP_TALK` | `13` | Help talk namespace |
+| `NS_CATEGORY` | `14` | Category namespace |
+| `NS_CATEGORY_TALK` | `15` | Category talk namespace |
+| `NS_SPECIAL` | `-1` | Special pages (not stored in DB) |
+| `NS_MEDIA` | `-2` | Media namespace (for file links) |
+
+For namespace-related utility methods, use `NamespaceInfo`:
+
+```php
+$nsInfo = MediaWikiServices::getInstance()->getNamespaceInfo();
+
+$nsInfo->isTalk( NS_TALK );              // true
+$nsInfo->getSubject( NS_USER_TALK );     // NS_USER
+$nsInfo->getTalk( NS_USER );             // NS_USER_TALK
+$nsInfo->isContent( NS_MAIN );           // true
+$nsInfo->isCapitalized( NS_MAIN );       // true (when $wgCapitalLinks is set)
+$nsInfo->hasSubpages( NS_USER );         // true
+$nsInfo->getCanonicalName( NS_FILE );    // 'File'
+```

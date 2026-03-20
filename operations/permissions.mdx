@@ -1,0 +1,223 @@
+---
+title: "Permissions"
+description: "User groups, rights, and permission configuration in MediaWiki."
+---
+
+MediaWiki's permission system is based on **user groups** that are assigned sets of **rights**. Every action on the wiki — reading, editing, deleting, blocking — is controlled by a right, and every user has the rights granted by all the groups they belong to.
+
+---
+
+## Default User Groups
+
+<CardGroup cols={2}>
+  <Card title="*  (Everyone)" icon="globe">
+    Applies to all requests, including unauthenticated visitors. By default grants `read`, `createaccount`, and `edit` (the last of which can be revoked to make a read-only wiki).
+  </Card>
+  <Card title="user" icon="user">
+    All registered (logged-in) accounts. Grants rights like `move`, `upload`, `minoredit`, `editmywatchlist`, and `sendemail`.
+  </Card>
+  <Card title="autoconfirmed" icon="user-check">
+    Accounts that meet the auto-confirmation thresholds (`$wgAutoConfirmAge` and `$wgAutoConfirmCount`). Gets `autoconfirmed` and `editsemiprotected`.
+  </Card>
+  <Card title="sysop" icon="shield">
+    Administrators. Can delete pages, protect pages, block users, view deleted revisions, import pages, and manage the wiki configuration via the UI.
+  </Card>
+  <Card title="bureaucrat" icon="crown">
+    Can promote and demote users to/from the `sysop` and `bot` groups via Special:UserRights.
+  </Card>
+  <Card title="bot" icon="robot">
+    Automated accounts. Edits are flagged as bot edits and hidden from recent changes by default. Grants `bot`, `autopatrol`, `nominornewtalk`, and `noratelimit`.
+  </Card>
+  <Card title="interface-admin" icon="palette">
+    Can edit MediaWiki interface pages (`MediaWiki:` namespace) including site-wide CSS and JavaScript. Separate from `sysop` since MediaWiki 1.32.
+  </Card>
+  <Card title="suppress" icon="eye-slash">
+    Can suppress (oversight) revisions so they are hidden from sysops as well as normal users. Often restricted to trusted users only.
+  </Card>
+</CardGroup>
+
+---
+
+## $wgGroupPermissions
+
+All group→right mappings are defined in `$wgGroupPermissions`. The array key is the group name, the nested key is the right name, and the value is a boolean.
+
+```php
+// LocalSettings.php
+
+// Prevent anonymous users from editing
+$wgGroupPermissions['*']['edit'] = false;
+
+// Prevent anonymous users from reading (private wiki)
+$wgGroupPermissions['*']['read'] = false;
+$wgGroupPermissions['user']['read'] = true;
+
+// Allow autoconfirmed users to patrol edits
+$wgGroupPermissions['autoconfirmed']['patrol'] = true;
+
+// Create a custom group
+$wgGroupPermissions['trusted']['move'] = true;
+$wgGroupPermissions['trusted']['delete'] = false;
+
+// Grant a right to all logged-in users
+$wgGroupPermissions['user']['upload'] = true;
+```
+
+<Note>
+To revoke a right that was granted to an earlier group in the hierarchy, use `$wgRevokePermissions` rather than setting the right to `false` — the latter only affects that specific group.
+</Note>
+
+```php
+// Revoke 'edit' from all users, including those in elevated groups
+$wgRevokePermissions['*']['edit'] = true;
+```
+
+---
+
+## Available Rights
+
+The following core rights are defined in `PermissionManager::CORE_RIGHTS`:
+
+<CardGroup cols={2}>
+  <Card title="Content Rights">
+    `read` · `edit` · `createpage` · `createtalk` · `move` · `movefile` · `upload` · `reupload` · `delete` · `undelete` · `import` · `importupload`
+  </Card>
+  <Card title="Administrative Rights">
+    `block` · `blockemail` · `protect` · `editprotected` · `rollback` · `patrol` · `autopatrol` · `userrights` · `siteadmin` · `interwiki`
+  </Card>
+  <Card title="Interface Rights">
+    `editinterface` · `editsitecss` · `editsitejs` · `editsitejson` · `editusercss` · `edituserjs` · `edituserjson`
+  </Card>
+  <Card title="User Rights">
+    `createaccount` · `autocreateaccount` · `sendemail` · `viewmyprivateinfo` · `editmyprivateinfo` · `editmyoptions` · `editmywatchlist` · `viewmywatchlist`
+  </Card>
+  <Card title="Content Visibility">
+    `deletedhistory` · `deletedtext` · `suppressrevision` · `viewsuppressed` · `suppressionlog` · `hideuser` · `browsearchive`
+  </Card>
+  <Card title="Performance Rights">
+    `apihighlimits` · `noratelimit` · `bot` · `markbotedits` · `autoconfirmed` · `nominornewtalk` · `bigdelete`
+  </Card>
+</CardGroup>
+
+---
+
+## Namespace-Level Permissions
+
+`$wgNamespaceProtection` locks specific namespaces so that only users with a given right can edit them:
+
+```php
+// Only sysops can edit the MediaWiki namespace (already the default)
+$wgNamespaceProtection[NS_MEDIAWIKI] = [ 'editinterface' ];
+
+// Only trusted users can edit namespace 100 (a custom namespace)
+$wgNamespaceProtection[100] = [ 'editcustomns' ];
+
+// Grant the right to the 'editor' group
+$wgGroupPermissions['editor']['editcustomns'] = true;
+```
+
+### Page Protection Levels
+
+Individual pages can be protected via the UI (Special:Protect) or API. Protection levels are defined in `$wgRestrictionLevels`:
+
+```php
+// Default protection levels: '', 'autoconfirmed', 'sysop'
+// Add a custom 'reviewer' level
+$wgRestrictionLevels[] = 'reviewer';
+$wgGroupPermissions['reviewer']['editreviewer'] = true;
+```
+
+---
+
+## Block System
+
+The block system prevents specific users, IP addresses, or CIDR ranges from editing (and optionally reading, creating accounts, or sending email).
+
+### Block Types
+
+| Block Type | Example | Description |
+|-----------|---------|-------------|
+| User block | `BlockUser` | Blocks a specific registered account |
+| IP block | `192.168.1.1` | Blocks a single IP address |
+| Range block | `192.168.1.0/24` | Blocks a CIDR range of IP addresses |
+| Autoblock | (automatic) | Automatically blocks IPs used by a blocked user |
+| Global block | (via CentralAuth) | Blocks across all wikis in a farm |
+
+### Block Configuration
+
+```php
+// Maximum block duration for non-sysop users to apply
+$wgBlockAllowsUTEdit = true;   // Allow blocked users to edit their own talk page
+
+// Allow sysops to issue partial blocks (specific pages/namespaces only)
+// (enabled by default since 1.33)
+
+// Prevent blocked users from logging in
+$wgBlockDisablesLogin = false; // default; set to true to disable login for blocked users
+```
+
+### Purging Expired Blocks
+
+```bash
+php maintenance/run.php purgeExpiredBlocks
+```
+
+---
+
+## Checking Permissions in Code
+
+Use `PermissionManager` (available via `MediaWikiServices`) to check whether a user can perform an action. Do not check `$wgGroupPermissions` directly.
+
+```php
+use MediaWiki\MediaWikiServices;
+
+$permissionManager = MediaWikiServices::getInstance()->getPermissionManager();
+
+// Check if a user can perform an action on a page
+if ( $permissionManager->userCan( 'delete', $user, $title ) ) {
+    // User is allowed to delete this page
+}
+
+// Get all errors preventing an action (returns array of error messages)
+$errors = $permissionManager->getPermissionErrors( 'edit', $user, $title );
+if ( $errors === [] ) {
+    // No permission errors
+}
+
+// Check a right without a specific page context
+if ( $permissionManager->userHasRight( $user, 'block' ) ) {
+    // User is in a group that grants 'block'
+}
+```
+
+### Rigor Levels
+
+`PermissionManager` supports three rigor levels for permission checks:
+
+| Rigor | Constant | Description |
+|-------|----------|-------------|
+| Quick | `RIGOR_QUICK` | Cheap checks using replica DB; suitable for UI rendering |
+| Full | `RIGOR_FULL` | Full checks possibly from replica DB |
+| Secure | `RIGOR_SECURE` | Full checks using the primary DB; use for actual write operations |
+
+```php
+// Secure check before a write operation
+$errors = $permissionManager->getPermissionErrors(
+    'delete',
+    $user,
+    $title,
+    PermissionManager::RIGOR_SECURE
+);
+```
+
+---
+
+## Auto-confirmation
+
+Auto-confirmation automatically promotes users to the `autoconfirmed` group after meeting age and edit count thresholds:
+
+```php
+// Require 4 days old and 10 edits for autoconfirmed
+$wgAutoConfirmAge   = 4 * 24 * 3600; // seconds
+$wgAutoConfirmCount = 10;
+```

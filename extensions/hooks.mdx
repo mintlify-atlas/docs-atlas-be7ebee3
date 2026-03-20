@@ -1,0 +1,387 @@
+---
+title: "Extension Hooks"
+description: "How to register and implement hooks in your MediaWiki extension."
+---
+
+Hooks allow MediaWiki core to call extensions, or allow one extension to call another. Starting in MediaWiki 1.35, every hook called by core has an associated PHP interface with a single method. To handle a hook in an extension, you create a handler class that implements that interface.
+
+## How hooks work
+
+`HookContainer` (in `includes/HookContainer/HookContainer.php`) is the service that maintains all registered handlers and calls them when `HookContainer::run()` is invoked. The container is not aware of hook interfaces or parameter types — it only deals with callables.
+
+When a hook fires, `HookContainer::run()` iterates through registered handlers in order. For each handler:
+
+- If the handler returns `false`, iteration stops and `run()` returns `false` (the hook is aborted).
+- If the handler returns `true` or `null` (no explicit return), iteration continues.
+- Any other return value throws an `UnexpectedValueException`.
+
+## Registering hooks in extension.json
+
+Hook registration uses two coordinated fields: `HookHandlers` and `Hooks`.
+
+### HookHandlers
+
+`HookHandlers` maps handler names to ObjectFactory specifications. The simplest form names a class:
+
+```json
+"HookHandlers": {
+    "main": {
+        "class": "MediaWiki\\Extension\\FoodProcessor\\HookHandler"
+    }
+}
+```
+
+### Hooks
+
+`Hooks` maps the hook name (without the trailing `Hook` suffix) to a handler name from `HookHandlers`:
+
+```json
+"Hooks": {
+    "Mash": "main"
+}
+```
+
+The more explicit object form is equivalent:
+
+```json
+"Hooks": {
+    "Mash": {
+        "handler": "main"
+    }
+}
+```
+
+<Warning>
+  Use the hook name without the trailing `Hook` suffix in the `Hooks` map. For the interface `MashHook`, the key must be `"Mash"`, not `"MashHook"`.
+</Warning>
+
+## Implementing a hook handler class
+
+Each hook has a corresponding interface. The interface name is the hook name with `Hook` appended. The method name is `on` followed by the hook name.
+
+For the `Mash` hook, the extension defines:
+
+```php src/HookHandler.php
+<?php
+
+namespace MediaWiki\Extension\FoodProcessor;
+
+use MediaWiki\Extension\FoodProcessor\Hook\MashHook;
+
+class HookHandler implements MashHook {
+
+    public function onMash( $banana ): void {
+        // Process the banana
+    }
+}
+```
+
+For a core hook like `BeforePageDisplay`:
+
+```php src/HookHandler.php
+<?php
+
+namespace MediaWiki\Extension\FoodProcessor;
+
+use MediaWiki\Hook\BeforePageDisplayHook;
+use MediaWiki\Output\OutputPage;
+use Skin;
+
+class HookHandler implements BeforePageDisplayHook {
+
+    public function onBeforePageDisplay( $out, $skin ): void {
+        $out->addWikiMsg( 'foodprocessor-notice' );
+    }
+}
+```
+
+A single handler class can implement multiple hook interfaces:
+
+```php src/HookHandler.php
+<?php
+
+namespace MediaWiki\Extension\FoodProcessor;
+
+use MediaWiki\Hook\BeforePageDisplayHook;
+use MediaWiki\Hook\GetPreferencesHook;
+use MediaWiki\Output\OutputPage;
+use MediaWiki\User\User;
+use Skin;
+
+class HookHandler implements BeforePageDisplayHook, GetPreferencesHook {
+
+    public function onBeforePageDisplay( $out, $skin ): void {
+        $out->addModules( 'ext.foodprocessor.ui' );
+    }
+
+    public function onGetPreferences( $user, &$preferences ): void {
+        $preferences['foodprocessor-enable'] = [
+            'type' => 'toggle',
+            'label-message' => 'foodprocessor-pref-enable',
+            'section' => 'misc',
+        ];
+    }
+}
+```
+
+## Service injection into hook handlers
+
+The `services` key in `HookHandlers` lists MediaWiki service names to inject into the handler's constructor via ObjectFactory. Services are prepended before any `args`.
+
+```json extension.json
+"HookHandlers": {
+    "main": {
+        "class": "MediaWiki\\Extension\\FoodProcessor\\HookHandler",
+        "services": [ "ReadOnlyMode" ]
+    }
+}
+```
+
+The handler constructor receives the service as a parameter:
+
+```php src/HookHandler.php
+<?php
+
+namespace MediaWiki\Extension\FoodProcessor;
+
+use MediaWiki\Hook\BeforePageDisplayHook;
+use MediaWiki\Output\OutputPage;
+use Wikimedia\Rdbms\ReadOnlyMode;
+use Skin;
+
+class HookHandler implements BeforePageDisplayHook {
+
+    private ReadOnlyMode $readOnlyMode;
+
+    public function __construct( ReadOnlyMode $readOnlyMode ) {
+        $this->readOnlyMode = $readOnlyMode;
+    }
+
+    public function onBeforePageDisplay( $out, $skin ): void {
+        if ( $this->readOnlyMode->isReadOnly() ) {
+            $out->addWikiMsg( 'foodprocessor-readonly-notice' );
+        }
+    }
+}
+```
+
+<Warning>
+  Take care with service injection in commonly-called hooks. Some services have expensive constructors. Requesting them for every page view can damage performance. The safest pattern is to use a separate handler object for each hook and inject only the services that specific hook needs.
+</Warning>
+
+### The noServices option
+
+Calling a hook with the `noServices` option disables service injection entirely. If a handler for such a hook declares services in its `HookHandlers` spec, `HookContainer` throws an `UnexpectedValueException` when the hook fires:
+
+```php
+// In core hook-calling code:
+$hookContainer->run( 'PerformanceHook', $args, [ 'noServices' => true ] );
+```
+
+If you register a handler for a hook that is called with `noServices`, your `HookHandlers` entry must not include a `services` list.
+
+## Aborting hooks
+
+Return `false` from a handler to abort the hook and stop further handlers from being called:
+
+```php
+public function onMash( $banana ): bool {
+    if ( $banana->isRotten() ) {
+        // Abort — do not allow mashing rotten bananas
+        return false;
+    }
+    // Continue
+    return true;
+}
+```
+
+Note that `HookContainer::run()` returns the boolean result to the caller. Most hook callers do not check this return value — aborting only matters for hooks that are explicitly documented as abortable.
+
+<Note>
+  Some hooks are declared non-abortable by passing `[ 'abortable' => false ]` to `HookContainer::run()`. Returning `false` from a handler for such a hook throws an `UnexpectedValueException`. Check hook documentation before relying on abort behaviour.
+</Note>
+
+## Parameters passed by reference
+
+Many hooks pass parameters by reference. Modifying a reference parameter is the standard way for a handler to return data to the caller:
+
+```php
+public function onGetPreferences( $user, &$preferences ): void {
+    // $preferences is passed by reference — modifications affect the caller
+    $preferences['my-setting'] = [
+        'type' => 'toggle',
+        'label-message' => 'myextension-pref-label',
+        'section' => 'misc',
+    ];
+}
+```
+
+Only modify a reference parameter when the hook documentation explicitly states that replacement is expected.
+
+## Calling hooks from your extension
+
+Extensions that define their own hooks should create a hook runner class, mirroring the pattern used in core's `HookRunner`.
+
+To call the hook `Mash` as defined in the FoodProcessor extension:
+
+```php src/HookRunner.php
+<?php
+
+namespace MediaWiki\Extension\FoodProcessor;
+
+use MediaWiki\Extension\FoodProcessor\Hook\MashHook;
+use MediaWiki\HookContainer\HookContainer;
+
+class HookRunner implements MashHook {
+
+    private HookContainer $hookContainer;
+
+    public function __construct( HookContainer $hookContainer ) {
+        $this->hookContainer = $hookContainer;
+    }
+
+    public function onMash( $banana ): bool {
+        return $this->hookContainer->run(
+            'Mash',
+            [ $banana ]
+        );
+    }
+}
+```
+
+Call the hook from a service by passing `HookContainer` as a constructor dependency:
+
+```php
+$hookRunner = new HookRunner(
+    MediaWikiServices::getInstance()->getHookContainer()
+);
+$hookRunner->onMash( $banana );
+```
+
+## Defining custom hooks for your extension
+
+If your extension exposes hooks for other extensions to handle, follow these steps:
+
+<Steps>
+  <Step title="Create a hook interface">
+    Place the interface in a `Hook` subnamespace relative to your extension's primary namespace. The method name is the hook name prefixed with `on`.
+
+    ```php src/Hook/MashHook.php
+    <?php
+
+    namespace MediaWiki\Extension\FoodProcessor\Hook;
+
+    /**
+     * Called when the FoodProcessor is about to mash a banana.
+     *
+     * @stable to implement
+     */
+    interface MashHook {
+
+        /**
+         * @param Banana $banana The banana to be mashed
+         * @return bool|void Return false to abort mashing
+         */
+        public function onMash( $banana );
+    }
+    ```
+  </Step>
+
+  <Step title="Create a hook runner class">
+    The hook runner implements the interface and proxies calls to `HookContainer::run()`.
+
+    ```php src/HookRunner.php
+    <?php
+
+    namespace MediaWiki\Extension\FoodProcessor;
+
+    use MediaWiki\Extension\FoodProcessor\Hook\MashHook;
+    use MediaWiki\HookContainer\HookContainer;
+
+    /**
+     * @internal Use MediaWikiServices::getService('FoodProcessor.HookRunner')
+     */
+    class HookRunner implements MashHook {
+
+        private HookContainer $hookContainer;
+
+        public function __construct( HookContainer $hookContainer ) {
+            $this->hookContainer = $hookContainer;
+        }
+
+        /** @inheritDoc */
+        public function onMash( $banana ): bool {
+            return $this->hookContainer->run( 'Mash', [ $banana ] );
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Call the hook via the runner">
+    In your extension's service or processing code, call the hook through your runner:
+
+    ```php
+    $hookRunner->onMash( $banana );
+    ```
+  </Step>
+</Steps>
+
+## Deprecating hooks you have defined
+
+When you want to retire a hook your extension defines, use the `DeprecatedHooks` attribute in `extension.json`:
+
+```json
+"DeprecatedHooks": {
+    "Mash": {
+        "deprecatedVersion": "2.0",
+        "component": "FoodProcessor"
+    }
+}
+```
+
+Also add `@deprecated` to the hook interface doc comment — this deprecates implementing the interface (not just calling it):
+
+```php
+/**
+ * @deprecated since FoodProcessor 2.0. Use SliceHook instead.
+ */
+interface MashHook {
+    public function onMash( $banana );
+}
+```
+
+Extensions that have already migrated to the replacement hook can acknowledge the deprecation in their `Hooks` registration. This activates **call filtering**: when MediaWiki knows the hook is deprecated, handlers that acknowledge deprecation are skipped entirely.
+
+```json
+"Hooks": {
+    "Mash": {
+        "handler": "main",
+        "deprecated": true
+    },
+    "Slice": "main"
+}
+```
+
+### Call filtering example
+
+The FoodProcessor example illustrates how call filtering provides both forwards and backwards compatibility:
+
+| MediaWiki | FoodProcessor | Result |
+|-----------|---------------|--------|
+| 2.0 (Mash deprecated) | 1.0 (no acknowledgement) | `onMash` is called with a deprecation warning |
+| 2.0 (Mash deprecated) | 2.0 (`deprecated: true`) | `onMash` is filtered; `onSlice` is called |
+| 1.0 (Mash not deprecated) | 2.0 (`deprecated: true`) | `onMash` is called since it is not yet deprecated; `onSlice` is not called |
+
+### Silent deprecation
+
+To deprecate a hook without immediately raising warnings — a "soft" deprecation — use the `silent` flag. Call filtering is still activated, allowing extensions to migrate without a noisy warning period.
+
+```json
+"DeprecatedHooks": {
+    "Mash": {
+        "deprecatedVersion": "2.0",
+        "component": "FoodProcessor",
+        "silent": true
+    }
+}
+```

@@ -1,0 +1,199 @@
+---
+title: "Search API"
+description: "REST API endpoints for searching wiki pages by title and full-text content."
+---
+
+The Search API provides two endpoints for finding pages: full-text search across page bodies and titles, and title prefix completion for autocomplete-style queries. Both endpoints are served under `/w/rest.php/v1/search/`.
+
+## GET /v1/search/page
+
+Performs a full-text search across page bodies and titles. Results are ranked by relevance and deduplicated — if a search result is a redirect, the response returns the redirect target page instead.
+
+```bash
+curl "https://en.wikipedia.org/w/rest.php/v1/search/page?q=solar+system"
+```
+
+### Query parameters
+
+<ParamField query="q" type="string" required>
+  The search query string. Supports the same syntax as the wiki's standard search (boolean operators, phrase matching, and field-specific queries when the search backend supports them).
+</ParamField>
+
+<ParamField query="limit" type="number" default="50">
+  The maximum number of results to return. Minimum: `1`. Maximum: `100`.
+</ParamField>
+
+### Response
+
+<ResponseField name="pages" type="array" required>
+  An array of matching page objects.
+  <Expandable title="page properties">
+    <ResponseField name="id" type="integer">
+      The page ID.
+    </ResponseField>
+    <ResponseField name="key" type="string">
+      The page title in URL-key form (with underscores).
+    </ResponseField>
+    <ResponseField name="title" type="string">
+      The page title with spaces as displayed on the wiki.
+    </ResponseField>
+    <ResponseField name="excerpt" type="string">
+      A short snippet of matching text from the page body, with search terms highlighted using `<span class="searchmatch">` tags. Null when no relevant excerpt is available.
+    </ResponseField>
+    <ResponseField name="matched_title" type="string">
+      When the result matched via a redirect, this is the title of the redirect page. Null when the match was on the canonical page title.
+    </ResponseField>
+    <ResponseField name="anchor" type="string">
+      When the result matched via a redirect that targets a specific section, this is the section anchor. Null otherwise.
+    </ResponseField>
+    <ResponseField name="description" type="string">
+      A short description of the page, provided by extensions implementing the `SearchResultProvideDescription` hook (e.g., Wikidata descriptions). Null when no description is available.
+    </ResponseField>
+    <ResponseField name="thumbnail" type="object">
+      A thumbnail image for the page, provided by extensions implementing the `SearchResultProvideThumbnail` hook. Null when no thumbnail is available.
+      <Expandable title="thumbnail properties">
+        <ResponseField name="mimetype" type="string">
+          MIME type of the thumbnail (e.g., `image/jpeg`).
+        </ResponseField>
+        <ResponseField name="width" type="integer">
+          Width in pixels. Null if unknown.
+        </ResponseField>
+        <ResponseField name="height" type="integer">
+          Height in pixels. Null if unknown.
+        </ResponseField>
+        <ResponseField name="duration" type="number">
+          Duration in seconds for audio/video files. Null for images.
+        </ResponseField>
+        <ResponseField name="url" type="string">
+          URL of the thumbnail image.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl "https://en.wikipedia.org/w/rest.php/v1/search/page?q=solar+system"
+```
+
+```bash curl with limit
+curl "https://en.wikipedia.org/w/rest.php/v1/search/page?q=solar+system&limit=10"
+```
+
+```json response
+{
+  "pages": [
+    {
+      "id": 26903,
+      "key": "Solar_System",
+      "title": "Solar System",
+      "excerpt": "The <span class=\"searchmatch\">Solar</span> <span class=\"searchmatch\">System</span> is the gravitationally bound system...",
+      "matched_title": null,
+      "anchor": null,
+      "description": "Sun and its planetary system",
+      "thumbnail": {
+        "mimetype": "image/jpeg",
+        "width": 320,
+        "height": 240,
+        "duration": null,
+        "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cb/Planets2013.svg/320px-Planets2013.svg.png"
+      }
+    }
+  ]
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /v1/search/title
+
+Performs a title prefix completion search — returns pages whose titles begin with or closely match the query. This endpoint is optimized for autocomplete use cases and uses the search engine's completion (suggestion) mode.
+
+```bash
+curl "https://en.wikipedia.org/w/rest.php/v1/search/title?q=Earth"
+```
+
+### Query parameters
+
+<ParamField query="q" type="string" required>
+  The title prefix or partial title to match against. The search engine may also return fuzzy or variant matches depending on backend configuration.
+</ParamField>
+
+<ParamField query="limit" type="number" default="50">
+  The maximum number of suggestions to return. Minimum: `1`. Maximum: `100`.
+</ParamField>
+
+### Response
+
+Same structure as `GET /v1/search/page` — a `pages` array of page objects. The `excerpt` field contains the suggestion text from the completion engine rather than a body snippet.
+
+<CodeGroup>
+
+```bash curl
+curl "https://en.wikipedia.org/w/rest.php/v1/search/title?q=Earth"
+```
+
+```bash curl with limit
+curl "https://en.wikipedia.org/w/rest.php/v1/search/title?q=Earth&limit=5"
+```
+
+```json response
+{
+  "pages": [
+    {
+      "id": 9228,
+      "key": "Earth",
+      "title": "Earth",
+      "excerpt": "Earth",
+      "matched_title": null,
+      "anchor": null,
+      "description": "Third planet from the Sun",
+      "thumbnail": {
+        "mimetype": "image/jpeg",
+        "width": 320,
+        "height": 320,
+        "duration": null,
+        "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/NASA-Apollo8-Dec24-Earthrise.jpg/320px-NASA-Apollo8-Dec24-Earthrise.jpg"
+      }
+    },
+    {
+      "id": 101537,
+      "key": "Earth_(disambiguation)",
+      "title": "Earth (disambiguation)",
+      "excerpt": "Earth (disambiguation)",
+      "matched_title": null,
+      "anchor": null,
+      "description": null,
+      "thumbnail": null
+    }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Caching
+
+Completion search responses (`/v1/search/title`) are cached by the server when the wiki allows public reading. The `Cache-Control` header reflects the `$wgSearchSuggestCacheExpiry` configuration value. Full-text search responses (`/v1/search/page`) follow standard REST API caching behavior.
+
+## Search backends
+
+The search results returned by both endpoints depend on the wiki's configured search backend.
+
+<AccordionGroup>
+  <Accordion title="Built-in search (CirrusSearch not installed)">
+    When no external search engine is configured, MediaWiki uses its built-in SQL-based search engine. Full-text search queries the `searchindex` table using the database's native full-text search capabilities. Title completion uses simple prefix matching against page titles. Result quality is limited compared to dedicated search engines.
+  </Accordion>
+
+  <Accordion title="CirrusSearch (Elasticsearch / OpenSearch)">
+    Wikimedia wikis and many large installations use the CirrusSearch extension, which indexes pages in Elasticsearch or OpenSearch. CirrusSearch provides significantly better relevance ranking, support for complex query syntax, fuzzy matching, language-aware stemming, and cross-namespace search. The `description` and `thumbnail` fields in search results are populated when CirrusSearch is combined with extensions like Wikidata and PageImages.
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+For type-ahead search widgets, prefer `GET /v1/search/title` over `GET /v1/search/page`. Title completion is faster, more cache-friendly, and purpose-built for suggesting page titles as the user types.
+</Tip>
