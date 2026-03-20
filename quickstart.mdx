@@ -55,21 +55,24 @@ cd mediawiki
 # 2. Install PHP dependencies
 composer install
 
-# 3. Copy the environment template and set your user IDs
-cp .env.example .env
-printf "MW_DOCKER_UID=$(id -u)\nMW_DOCKER_GID=$(id -g)\n" >> .env
+# 3. Create the .env file (no .env.example — create it manually)
+cat > .env << 'EOF'
+MW_SCRIPT_PATH=/w
+MW_SERVER=http://localhost:8080
+MW_DOCKER_PORT=8080
+MEDIAWIKI_USER=Admin
+MEDIAWIKI_PASSWORD=dockerpass
+XDEBUG_CONFIG=
+XDEBUG_ENABLE=true
+XHPROF_ENABLE=true
+EOF
+echo "MW_DOCKER_UID=$(id -u)" >> .env
+echo "MW_DOCKER_GID=$(id -g)" >> .env
 
 # 4. Start all services (PHP-FPM, Apache, job runner)
 docker compose up -d
 
-# 5. Run the MediaWiki installer inside the container
-docker compose exec mediawiki php maintenance/run.php install \
-  --server="http://localhost:8080" \
-  --dbtype=sqlite \
-  --dbpath=cache/sqlite \
-  --scriptpath=/w \
-  --pass=dockerpass \
-  MediaWiki Admin
+# 5. Wait for services, then open http://localhost:8080/w/index.php
 ```
 
 ```bash Manual install (SQLite + PHP built-in server)
@@ -102,12 +105,26 @@ composer serve
   </Step>
 
   <Step title="Configure the environment">
-    The Docker Compose setup reads from a `.env` file. Create one and set the Docker user/group IDs so that files written inside containers are owned by your user on the host:
+    The Docker Compose setup reads from a `.env` file. Create one manually (there is no `.env.example`):
 
     ```bash
-    cp .env.example .env
-    printf "MW_DOCKER_UID=$(id -u)\nMW_DOCKER_GID=$(id -g)\n" >> .env
+    cat > .env << 'EOF'
+    MW_SCRIPT_PATH=/w
+    MW_SERVER=http://localhost:8080
+    MW_DOCKER_PORT=8080
+    MEDIAWIKI_USER=Admin
+    MEDIAWIKI_PASSWORD=dockerpass
+    XDEBUG_CONFIG=
+    XDEBUG_ENABLE=true
+    XHPROF_ENABLE=true
+    EOF
+    echo "MW_DOCKER_UID=$(id -u)" >> .env
+    echo "MW_DOCKER_GID=$(id -g)" >> .env
     ```
+
+    <Note>
+      Windows users: leave `MW_DOCKER_UID` and `MW_DOCKER_GID` blank in the `.env` file.
+    </Note>
 
     The `docker-compose.yml` defines three services:
 
@@ -132,21 +149,20 @@ composer serve
     ```
   </Step>
 
-  <Step title="Run the installer">
-    The CLI installer (`maintenance/install.php`) creates the database schema and generates `LocalSettings.php`. Run it inside the `mediawiki` container:
+  <Step title="Install MediaWiki">
+    First install Composer dependencies inside the container, then run the install script:
 
     ```bash
-    docker compose exec mediawiki php maintenance/run.php install \
-      --server="http://localhost:8080" \
-      --dbtype=sqlite \
-      --dbpath=cache/sqlite \
-      --scriptpath=/w \
-      --lang=en \
-      --pass=dockerpass \
-      MediaWiki Admin
+    # Install PHP dependencies inside the container
+    docker compose exec mediawiki composer update
+
+    # Run the Docker install script (creates the database and LocalSettings.php)
+    docker compose exec mediawiki /bin/bash /docker/install.sh
     ```
 
-    Supported `--dbtype` values are `mysql`, `postgres`, and `sqlite`. For MySQL/MariaDB or PostgreSQL, also supply `--dbserver`, `--dbname`, `--dbuser`, and `--dbpass`.
+    <Note>
+      Windows users: the install script must be run from PowerShell, not Bash.
+    </Note>
   </Step>
 
   <Step title="Verify the installation">

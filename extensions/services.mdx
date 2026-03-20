@@ -55,7 +55,7 @@ return [
     ): FoodProcessorService {
         return new FoodProcessorService(
             $services->getMainConfig(),
-            $services->getDBLoadBalancer(),
+            $services->getConnectionProvider(),
             $services->getHookContainer()
         );
     },
@@ -95,12 +95,11 @@ static function ( MediaWikiServices $services ): MyExtensionService {
     return new MyExtensionService(
         // Core services
         $services->getMainConfig(),
-        $services->getDBLoadBalancer(),
         $services->getConnectionProvider(),
         $services->getHookContainer(),
         $services->getObjectFactory(),
         $services->getUserFactory(),
-        $services->getTitleFactory(),
+        $services->getTitleFormatter(),
         $services->getRevisionStore(),
         $services->getPermissionManager(),
 
@@ -111,7 +110,7 @@ static function ( MediaWikiServices $services ): MyExtensionService {
 ```
 
 <Tip>
-  Access extension services via `$services->getService( 'ExtensionName.ServiceName' )`. Core services have dedicated typed accessors like `getMainConfig()`, `getDBLoadBalancer()`, and `getHookContainer()`.
+  Access extension services via `$services->getService( 'ExtensionName.ServiceName' )`. Core services have dedicated typed accessors like `getMainConfig()`, `getConnectionProvider()`, and `getHookContainer()`. Use `getConnectionProvider()` (since 1.42) rather than the older `getDBLoadBalancer()` for new code.
 </Tip>
 
 ## Implementing a service class
