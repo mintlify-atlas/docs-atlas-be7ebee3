@@ -1,0 +1,113 @@
+{
+  "projectType": "framework",
+  "projectName": "MediaWiki",
+  "projectDescription": "A free and open-source wiki framework written in PHP that powers Wikipedia and thousands of other wikis, featuring an extensible hook system, REST and Action APIs, and multi-language support.",
+  "theme": "linden",
+  "primaryColor": "#fc7f04",
+  "lightColor": "#870455",
+  "darkColor": "#db5551",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Getting Started",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["introduction", "quickstart", "architecture"]
+          },
+          {
+            "group": "Installation",
+            "pages": ["installation/requirements", "installation/setup", "installation/configuration"]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": ["concepts/hooks", "concepts/services", "concepts/extensions", "concepts/skins"]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Extensions",
+            "pages": ["extensions/overview", "extensions/extension-json", "extensions/hooks", "extensions/services"]
+          },
+          {
+            "group": "Database",
+            "pages": ["database/overview", "database/schema", "database/querying"]
+          },
+          {
+            "group": "Parser & Content",
+            "pages": ["parser/overview", "parser/content-handlers", "parser/magic-words"]
+          },
+          {
+            "group": "ResourceLoader",
+            "pages": ["resourceloader/overview", "resourceloader/modules", "resourceloader/javascript"]
+          },
+          {
+            "group": "Skins",
+            "pages": ["skins/overview", "skins/development", "skins/templating"]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "REST API",
+            "pages": ["api/rest/overview", "api/rest/pages", "api/rest/revisions", "api/rest/search"]
+          },
+          {
+            "group": "Action API",
+            "pages": ["api/action/overview", "api/action/query", "api/action/edit", "api/action/authentication"]
+          },
+          {
+            "group": "PHP Services",
+            "pages": ["api/services/mediawiki-services", "api/services/hook-container", "api/services/title"]
+          }
+        ]
+      },
+      {
+        "tab": "Operations",
+        "groups": [
+          {
+            "group": "Maintenance",
+            "pages": ["operations/maintenance-scripts", "operations/jobs", "operations/caching"]
+          },
+          {
+            "group": "Security",
+            "pages": ["operations/security", "operations/permissions", "operations/authentication"]
+          },
+          {
+            "group": "Upgrade",
+            "pages": ["operations/upgrade", "operations/migration"]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Extensible hook system for plugins and extensions",
+    "REST API and Action API for programmatic access",
+    "Multi-language support (350+ languages)",
+    "ResourceLoader for optimized asset delivery",
+    "Revision history and watchlist system",
+    "Flexible skin/theming system",
+    "Job queue for background processing",
+    "Support for MySQL, MariaDB, PostgreSQL, and SQLite"
+  ],
+  "publicApiSurface": [
+    "GET /w/rest.php/v1/page/{title}",
+    "GET /w/rest.php/v1/page/{title}/history",
+    "GET /w/rest.php/v1/revision/{id}",
+    "GET /w/rest.php/v1/search/page",
+    "POST /w/api.php?action=edit",
+    "GET /w/api.php?action=query",
+    "GET /w/api.php?action=parse",
+    "MediaWikiServices::getInstance()",
+    "HookContainer::run()",
+    "HookContainer::isRegistered()",
+    "MediaWiki\\Rest\\Handler",
+    "MediaWiki\\Api\\ApiBase"
+  ]
+}
